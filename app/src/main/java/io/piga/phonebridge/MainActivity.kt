@@ -17,6 +17,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -33,12 +34,14 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private lateinit var status: TextView
     private lateinit var baseUrl: EditText
+    private lateinit var bootstrapCodeInput: EditText
     private lateinit var pairButton: Button
     private lateinit var confirmButton: Button
 
-    private var pairingId: String? = null
-    private var challenge: String? = null
+    private var challengeId: String? = null
+    private var signingPayload: String? = null
     private var pairingCode: String? = null
+    private var publicKeyBase64: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,7 +52,7 @@ class MainActivity : Activity() {
             text = if (prefs.getBoolean("paired", false)) {
                 "PIGA Phone Bridge\n\nStatus: PAIRED\nRuntime starting…"
             } else {
-                "PIGA Phone Bridge\n\nDevice identity ready in Android Keystore.\nStatus: NOT PAIRED"
+                "PIGA Phone Bridge\n\nDevice identity ready in Android Keystore.\nStatus: NOT PAIRED\n\nPaste the short-lived bootstrap code from the authenticated PIGA Control Plane."
             }
             textSize = 18f
             gravity = Gravity.CENTER
@@ -59,6 +62,11 @@ class MainActivity : Activity() {
         baseUrl = EditText(this).apply {
             hint = "Bridge base URL"
             setText(resolveBaseUrl())
+            setSingleLine(true)
+        }
+
+        bootstrapCodeInput = EditText(this).apply {
+            hint = "One-time bootstrap code"
             setSingleLine(true)
         }
 
@@ -79,6 +87,7 @@ class MainActivity : Activity() {
             setPadding(36, 80, 36, 36)
             addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(baseUrl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(bootstrapCodeInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(pairButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(confirmButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
@@ -115,6 +124,12 @@ class MainActivity : Activity() {
     }
 
     private fun startPairing() {
+        val bootstrapCode = bootstrapCodeInput.text.toString().trim()
+        if (bootstrapCode.isBlank()) {
+            status.text = "Pairing blocked: enter the short-lived bootstrap code from the authenticated Control Plane."
+            return
+        }
+
         pairButton.isEnabled = false
         confirmButton.isEnabled = false
         status.text = "Requesting pairing challenge…"
@@ -126,20 +141,22 @@ class MainActivity : Activity() {
                     prefs.edit().putString("device_id", it).apply()
                 }
                 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-                val publicKey = ks.getCertificate(alias).publicKey.encoded
+                val pub = Base64.encodeToString(ks.getCertificate(alias).publicKey.encoded, Base64.NO_WRAP)
+                publicKeyBase64 = pub
+
+                val capabilities = JSONObject().put("scopes", JSONArray().put("pocket.notification"))
                 val body = JSONObject()
                     .put("deviceId", deviceId)
-                    .put("publicKey", Base64.encodeToString(publicKey, Base64.NO_WRAP))
-                    .put("keyAlgorithm", "EC-P256-SHA256")
+                    .put("publicKey", pub)
+                    .put("capabilities", capabilities)
+                    .put("bootstrapCode", bootstrapCode)
 
                 val response = postJson("$root/api/bridge/pairing/challenge", body)
-                pairingId = response.getString("pairingId")
-                challenge = response.getString("challenge")
-                pairingCode = response.optString("pairingCode")
-                val serverKey = response.optString("serverPublicKey")
-                if (serverKey.isNotBlank()) prefs.edit().putString("server_public_key", serverKey).apply()
+                challengeId = response.getString("challengeId")
+                signingPayload = response.getString("signingPayload")
+                pairingCode = response.getString("pairingCode")
                 runOnUiThread {
-                    status.text = "Pairing challenge received.\nCode: ${pairingCode ?: ""}\nConfirm within 10 minutes."
+                    status.text = "Pairing challenge received.\nCode: ${pairingCode ?: ""}\nConfirm before it expires."
                     pairButton.isEnabled = true
                     confirmButton.isEnabled = true
                 }
@@ -153,36 +170,38 @@ class MainActivity : Activity() {
     }
 
     private fun confirmPairing() {
-        val pid = pairingId ?: return
-        val ch = challenge ?: return
+        val cid = challengeId ?: return
+        val payload = signingPayload ?: return
         val code = pairingCode ?: return
+        val pub = publicKeyBase64 ?: return
         confirmButton.isEnabled = false
         status.text = "Signing and confirming pairing…"
         Thread {
             try {
                 val root = baseUrl.text.toString().trim().removeSuffix("/")
                 val deviceId = prefs.getString("device_id", "") ?: ""
-                val message = "PAIR_CONFIRM\n$pid\n$ch"
                 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
                 val signer = Signature.getInstance("SHA256withECDSA")
                 signer.initSign(entry.privateKey)
-                signer.update(message.toByteArray(Charsets.UTF_8))
-                val sig = Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
+                signer.update(payload.toByteArray(Charsets.UTF_8))
+                val sig = Base64.encodeToString(signer.sign(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 
                 val body = JSONObject()
+                    .put("challengeId", cid)
                     .put("deviceId", deviceId)
-                    .put("pairingId", pid)
+                    .put("publicKey", pub)
                     .put("pairingCode", code)
                     .put("signature", sig)
                 val response = postJson("$root/api/bridge/pairing/confirm", body)
-                val serverKey = response.optString("serverPublicKey")
+                val pairingId = response.optString("pairingId")
                 prefs.edit()
                     .putBoolean("paired", true)
+                    .putString("pairing_id", pairingId)
                     .putLong("request_counter", 0L)
                     .apply()
-                if (serverKey.isNotBlank()) prefs.edit().putString("server_public_key", serverKey).apply()
                 runOnUiThread {
+                    bootstrapCodeInput.setText("")
                     status.text = "PIGA Phone Bridge\n\nPAIRED\nStarting signed runtime…\nDevice: $deviceId"
                     pairButton.isEnabled = true
                     confirmButton.isEnabled = false
@@ -213,6 +232,7 @@ class MainActivity : Activity() {
             readTimeout = 15000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
         }
         connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val code = connection.responseCode
