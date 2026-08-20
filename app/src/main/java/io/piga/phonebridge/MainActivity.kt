@@ -28,6 +28,8 @@ import java.util.UUID
 
 class MainActivity : Activity() {
     private val alias = "piga_phone_bridge_device_key"
+    private val currentBaseUrl = "https://d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev"
+    private val legacyBaseHost = "ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private lateinit var status: TextView
     private lateinit var baseUrl: EditText
@@ -56,7 +58,7 @@ class MainActivity : Activity() {
 
         baseUrl = EditText(this).apply {
             hint = "Bridge base URL"
-            setText(prefs.getString("base_url", "https://ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev"))
+            setText(resolveBaseUrl())
             setSingleLine(true)
         }
 
@@ -94,6 +96,15 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::status.isInitialized && prefs.getBoolean("paired", false)) refreshRuntimeStatus()
+    }
+
+    private fun resolveBaseUrl(): String {
+        val stored = prefs.getString("base_url", null)?.trim()?.removeSuffix("/")
+        if (stored.isNullOrBlank() || stored.contains(legacyBaseHost)) {
+            prefs.edit().putString("base_url", currentBaseUrl).apply()
+            return currentBaseUrl
+        }
+        return stored
     }
 
     private fun refreshRuntimeStatus() {
