@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:allowBackup="false"
-        android:label="PIGA Phone Bridge"
+        android:label="PIGA Phone Bridge Pairing"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity
