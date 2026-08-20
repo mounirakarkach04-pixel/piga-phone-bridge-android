@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private lateinit var status: TextView
     private lateinit var baseUrl: EditText
+    private lateinit var deviceIdField: EditText
     private lateinit var publicKeyField: EditText
     private lateinit var bootstrapCodeInput: EditText
     private lateinit var pairButton: Button
@@ -51,13 +52,14 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         ensureKey()
         ensureNotifications()
+        val deviceId = ensureDeviceId()
         publicKeyBase64 = getPublicKeyBase64()
 
         status = TextView(this).apply {
             text = if (prefs.getBoolean("paired", false)) {
                 "PIGA Phone Bridge\n\nStatus: PAIRED\nRuntime starting…"
             } else {
-                "PIGA Phone Bridge\n\nDevice identity ready in Android Keystore.\nStatus: NOT PAIRED\n\nCopy the public key below into the authenticated PIGA Control Plane, create a short-lived Owner Bootstrap, then paste that one-time code here."
+                "PIGA Phone Bridge\n\nDevice identity ready in Android Keystore.\nStatus: NOT PAIRED\n\nCopy BOTH the Device ID and Public Key below into Phone Bridge Pairing in the authenticated PIGA Control Plane. Generate a fresh Owner Bootstrap, then paste that one-time code here."
             }
             textSize = 18f
             gravity = Gravity.CENTER
@@ -68,6 +70,22 @@ class MainActivity : Activity() {
             hint = "Bridge base URL"
             setText(resolveBaseUrl())
             setSingleLine(true)
+        }
+
+        deviceIdField = EditText(this).apply {
+            hint = "Android Device ID"
+            setText(deviceId)
+            isFocusable = false
+            isCursorVisible = false
+            setTextIsSelectable(true)
+        }
+
+        val copyDeviceIdButton = Button(this).apply {
+            text = "Copy device ID"
+            setOnClickListener {
+                copyToClipboard("PIGA Android Device ID", deviceIdField.text.toString())
+                status.text = "Device ID copied. Paste this exact value into the Android Device ID field in Phone Bridge Pairing."
+            }
         }
 
         publicKeyField = EditText(this).apply {
@@ -81,10 +99,8 @@ class MainActivity : Activity() {
         val copyPublicKeyButton = Button(this).apply {
             text = "Copy public key"
             setOnClickListener {
-                val value = publicKeyField.text.toString()
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("PIGA Android Keystore Public Key", value))
-                status.text = "Public key copied. Paste it into Phone Bridge Pairing in the authenticated PIGA Control Plane, then generate the one-time Owner Bootstrap code."
+                copyToClipboard("PIGA Android Keystore Public Key", publicKeyField.text.toString())
+                status.text = "Public key copied. Paste this exact value into the Android Keystore Public Key field in Phone Bridge Pairing."
             }
         }
 
@@ -110,6 +126,8 @@ class MainActivity : Activity() {
             setPadding(36, 80, 36, 36)
             addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(baseUrl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(deviceIdField, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(copyDeviceIdButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(publicKeyField, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(copyPublicKeyButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(bootstrapCodeInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -141,13 +159,26 @@ class MainActivity : Activity() {
         return stored
     }
 
+    private fun ensureDeviceId(): String {
+        val stored = prefs.getString("device_id", null)?.trim()
+        if (!stored.isNullOrBlank()) return stored
+        val created = UUID.randomUUID().toString()
+        prefs.edit().putString("device_id", created).apply()
+        return created
+    }
+
     private fun getPublicKeyBase64(): String {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         return Base64.encodeToString(ks.getCertificate(alias).publicKey.encoded, Base64.NO_WRAP)
     }
 
+    private fun copyToClipboard(label: String, value: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+    }
+
     private fun refreshRuntimeStatus() {
-        val deviceId = prefs.getString("device_id", "") ?: ""
+        val deviceId = ensureDeviceId()
         val runtime = prefs.getString("runtime_status", "STARTING") ?: "STARTING"
         val lastPoll = prefs.getLong("last_poll_ms", 0L)
         status.text = "PIGA Phone Bridge\n\nStatus: PAIRED\nRuntime: $runtime\nLast poll: ${if (lastPoll > 0) lastPoll else "pending"}\nDevice: $deviceId"
@@ -156,10 +187,9 @@ class MainActivity : Activity() {
     private fun startPairing() {
         val bootstrapCode = bootstrapCodeInput.text.toString().trim()
         if (bootstrapCode.isBlank()) {
-            status.text = "Pairing blocked: enter the short-lived bootstrap code from the authenticated Control Plane."
+            status.text = "Pairing blocked: enter a fresh short-lived Owner Bootstrap code."
             return
         }
-
         pairButton.isEnabled = false
         confirmButton.isEnabled = false
         status.text = "Requesting pairing challenge…"
@@ -167,19 +197,15 @@ class MainActivity : Activity() {
             try {
                 val root = baseUrl.text.toString().trim().removeSuffix("/")
                 prefs.edit().putString("base_url", root).apply()
-                val deviceId = prefs.getString("device_id", null) ?: UUID.randomUUID().toString().also {
-                    prefs.edit().putString("device_id", it).apply()
-                }
+                val deviceId = ensureDeviceId()
                 val pub = getPublicKeyBase64()
                 publicKeyBase64 = pub
-
                 val capabilities = JSONObject().put("scopes", JSONArray().put("pocket.notification"))
                 val body = JSONObject()
                     .put("deviceId", deviceId)
                     .put("publicKey", pub)
                     .put("capabilities", capabilities)
                     .put("bootstrapCode", bootstrapCode)
-
                 val response = postJson("$root/api/bridge/pairing/challenge", body)
                 challengeId = response.getString("challengeId")
                 signingPayload = response.getString("signingPayload")
@@ -208,14 +234,13 @@ class MainActivity : Activity() {
         Thread {
             try {
                 val root = baseUrl.text.toString().trim().removeSuffix("/")
-                val deviceId = prefs.getString("device_id", "") ?: ""
+                val deviceId = ensureDeviceId()
                 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
                 val signer = Signature.getInstance("SHA256withECDSA")
                 signer.initSign(entry.privateKey)
                 signer.update(payload.toByteArray(Charsets.UTF_8))
                 val sig = Base64.encodeToString(signer.sign(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
-
                 val body = JSONObject()
                     .put("challengeId", cid)
                     .put("deviceId", deviceId)
