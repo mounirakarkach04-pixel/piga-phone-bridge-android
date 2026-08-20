@@ -28,9 +28,7 @@ class BridgeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (running.compareAndSet(false, true)) {
-            Thread { pollLoop() }.start()
-        }
+        if (running.compareAndSet(false, true)) Thread { pollLoop() }.start()
         return START_STICKY
     }
 
@@ -52,16 +50,16 @@ class BridgeService : Service() {
                     ?: throw IllegalStateException("Missing bridge base URL")
                 val deviceId = prefs.getString("device_id", null)
                     ?: throw IllegalStateException("Missing device id")
-                val path = "/bridge/devices/$deviceId/commands"
-                val response = signedRequest("GET", "$root/api$path", path, "")
+                val pairingId = prefs.getString("pairing_id", null)
+                    ?: throw IllegalStateException("Missing pairing id")
+                val canonicalPath = "/api/bridge/devices/$deviceId/commands"
+                val response = signedRuntimeGet("$root$canonicalPath", canonicalPath, pairingId)
                 val count = response.optJSONArray("commands")?.length() ?: 0
                 prefs.edit()
                     .putLong("last_poll_ms", System.currentTimeMillis())
                     .putString("runtime_status", "ONLINE commands=$count")
                     .apply()
                 updateNotification("PIGA Bridge online • pending $count")
-                // Commands remain fail-closed until the signed governance snapshot
-                // endpoint is available and locally revalidated.
             } catch (e: Exception) {
                 prefs.edit().putString("runtime_status", "ERROR ${e.message ?: e.javaClass.simpleName}").apply()
                 updateNotification("PIGA Bridge reconnecting")
@@ -74,34 +72,41 @@ class BridgeService : Service() {
         }
     }
 
-    private fun signedRequest(method: String, url: String, canonicalPath: String, body: String): JSONObject {
-        val timestamp = System.currentTimeMillis().toString()
-        val counter = synchronized(prefs) {
-            val next = prefs.getLong("request_counter", 0L) + 1L
-            prefs.edit().putLong("request_counter", next).commit()
-            next
-        }.toString()
-        val requestId = UUID.randomUUID().toString()
-        val canonical = "$method\n$canonicalPath\n$timestamp\n$counter\n$requestId\n$body"
+    private fun signedRuntimeGet(url: String, canonicalPath: String, pairingId: String): JSONObject {
+        val timestamp = (System.currentTimeMillis() / 1000L).toString()
+        val nonce = UUID.randomUUID().toString().replace("-", "")
+        val cursor = ""
+        val limit = "20"
+        val canonical = listOf(
+            "PIGA_PHONE_BRIDGE_RUNTIME_V1",
+            "GET",
+            canonicalPath,
+            pairingId,
+            timestamp,
+            nonce,
+            cursor,
+            limit
+        ).joinToString("\n")
 
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
         val signer = Signature.getInstance("SHA256withECDSA")
         signer.initSign(entry.privateKey)
         signer.update(canonical.toByteArray(Charsets.UTF_8))
-        val signature = Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
-        val deviceId = prefs.getString("device_id", "") ?: ""
+        val signature = Base64.encodeToString(
+            signer.sign(),
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
 
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = method
+            requestMethod = "GET"
             connectTimeout = 15000
             readTimeout = 15000
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("x-piga-device-id", deviceId)
-            setRequestProperty("x-piga-timestamp", timestamp)
-            setRequestProperty("x-piga-counter", counter)
-            setRequestProperty("x-piga-request-id", requestId)
-            setRequestProperty("x-piga-signature", signature)
+            setRequestProperty("X-PIGA-Bridge-Pairing-Id", pairingId)
+            setRequestProperty("X-PIGA-Bridge-Timestamp", timestamp)
+            setRequestProperty("X-PIGA-Bridge-Nonce", nonce)
+            setRequestProperty("X-PIGA-Bridge-Signature", signature)
         }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
@@ -120,22 +125,20 @@ class BridgeService : Service() {
         }
     }
 
-    private fun statusNotification(text: String): Notification {
-        return if (Build.VERSION.SDK_INT >= 26) {
-            Notification.Builder(this, "piga_runtime")
-                .setContentTitle("PIGA Phone Bridge")
-                .setContentText(text)
-                .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setOngoing(true)
-                .build()
-        } else {
-            Notification.Builder(this)
-                .setContentTitle("PIGA Phone Bridge")
-                .setContentText(text)
-                .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setOngoing(true)
-                .build()
-        }
+    private fun statusNotification(text: String): Notification = if (Build.VERSION.SDK_INT >= 26) {
+        Notification.Builder(this, "piga_runtime")
+            .setContentTitle("PIGA Phone Bridge")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOngoing(true)
+            .build()
+    } else {
+        Notification.Builder(this)
+            .setContentTitle("PIGA Phone Bridge")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOngoing(true)
+            .build()
     }
 
     private fun updateNotification(text: String) {
