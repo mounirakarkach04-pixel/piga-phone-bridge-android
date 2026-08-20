@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -34,6 +37,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private lateinit var status: TextView
     private lateinit var baseUrl: EditText
+    private lateinit var publicKeyField: EditText
     private lateinit var bootstrapCodeInput: EditText
     private lateinit var pairButton: Button
     private lateinit var confirmButton: Button
@@ -47,12 +51,13 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         ensureKey()
         ensureNotifications()
+        publicKeyBase64 = getPublicKeyBase64()
 
         status = TextView(this).apply {
             text = if (prefs.getBoolean("paired", false)) {
                 "PIGA Phone Bridge\n\nStatus: PAIRED\nRuntime starting…"
             } else {
-                "PIGA Phone Bridge\n\nDevice identity ready in Android Keystore.\nStatus: NOT PAIRED\n\nPaste the short-lived bootstrap code from the authenticated PIGA Control Plane."
+                "PIGA Phone Bridge\n\nDevice identity ready in Android Keystore.\nStatus: NOT PAIRED\n\nCopy the public key below into the authenticated PIGA Control Plane, create a short-lived Owner Bootstrap, then paste that one-time code here."
             }
             textSize = 18f
             gravity = Gravity.CENTER
@@ -63,6 +68,24 @@ class MainActivity : Activity() {
             hint = "Bridge base URL"
             setText(resolveBaseUrl())
             setSingleLine(true)
+        }
+
+        publicKeyField = EditText(this).apply {
+            hint = "Android Keystore Public Key"
+            setText(publicKeyBase64 ?: "")
+            isFocusable = false
+            isCursorVisible = false
+            setTextIsSelectable(true)
+        }
+
+        val copyPublicKeyButton = Button(this).apply {
+            text = "Copy public key"
+            setOnClickListener {
+                val value = publicKeyField.text.toString()
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("PIGA Android Keystore Public Key", value))
+                status.text = "Public key copied. Paste it into Phone Bridge Pairing in the authenticated PIGA Control Plane, then generate the one-time Owner Bootstrap code."
+            }
         }
 
         bootstrapCodeInput = EditText(this).apply {
@@ -87,6 +110,8 @@ class MainActivity : Activity() {
             setPadding(36, 80, 36, 36)
             addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(baseUrl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(publicKeyField, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(copyPublicKeyButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(bootstrapCodeInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(pairButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(confirmButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -116,6 +141,11 @@ class MainActivity : Activity() {
         return stored
     }
 
+    private fun getPublicKeyBase64(): String {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        return Base64.encodeToString(ks.getCertificate(alias).publicKey.encoded, Base64.NO_WRAP)
+    }
+
     private fun refreshRuntimeStatus() {
         val deviceId = prefs.getString("device_id", "") ?: ""
         val runtime = prefs.getString("runtime_status", "STARTING") ?: "STARTING"
@@ -140,8 +170,7 @@ class MainActivity : Activity() {
                 val deviceId = prefs.getString("device_id", null) ?: UUID.randomUUID().toString().also {
                     prefs.edit().putString("device_id", it).apply()
                 }
-                val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-                val pub = Base64.encodeToString(ks.getCertificate(alias).publicKey.encoded, Base64.NO_WRAP)
+                val pub = getPublicKeyBase64()
                 publicKeyBase64 = pub
 
                 val capabilities = JSONObject().put("scopes", JSONArray().put("pocket.notification"))
