@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -44,7 +45,7 @@ class MainActivity : Activity() {
 
         status = TextView(this).apply {
             text = if (prefs.getBoolean("paired", false)) {
-                "PIGA Phone Bridge\n\nDevice identity ready.\nStatus: PAIRED"
+                "PIGA Phone Bridge\n\nStatus: PAIRED\nRuntime starting…"
             } else {
                 "PIGA Phone Bridge\n\nDevice identity ready in Android Keystore.\nStatus: NOT PAIRED"
             }
@@ -80,6 +81,26 @@ class MainActivity : Activity() {
             addView(confirmButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         setContentView(layout)
+
+        if (prefs.getBoolean("paired", false)) {
+            startBridgeRuntime()
+            Thread {
+                Thread.sleep(1200)
+                runOnUiThread { refreshRuntimeStatus() }
+            }.start()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::status.isInitialized && prefs.getBoolean("paired", false)) refreshRuntimeStatus()
+    }
+
+    private fun refreshRuntimeStatus() {
+        val deviceId = prefs.getString("device_id", "") ?: ""
+        val runtime = prefs.getString("runtime_status", "STARTING") ?: "STARTING"
+        val lastPoll = prefs.getLong("last_poll_ms", 0L)
+        status.text = "PIGA Phone Bridge\n\nStatus: PAIRED\nRuntime: $runtime\nLast poll: ${if (lastPoll > 0) lastPoll else "pending"}\nDevice: $deviceId"
     }
 
     private fun startPairing() {
@@ -104,6 +125,8 @@ class MainActivity : Activity() {
                 pairingId = response.getString("pairingId")
                 challenge = response.getString("challenge")
                 pairingCode = response.optString("pairingCode")
+                val serverKey = response.optString("serverPublicKey")
+                if (serverKey.isNotBlank()) prefs.edit().putString("server_public_key", serverKey).apply()
                 runOnUiThread {
                     status.text = "Pairing challenge received.\nCode: ${pairingCode ?: ""}\nConfirm within 10 minutes."
                     pairButton.isEnabled = true
@@ -141,12 +164,18 @@ class MainActivity : Activity() {
                     .put("pairingId", pid)
                     .put("pairingCode", code)
                     .put("signature", sig)
-                postJson("$root/api/bridge/pairing/confirm", body)
-                prefs.edit().putBoolean("paired", true).apply()
+                val response = postJson("$root/api/bridge/pairing/confirm", body)
+                val serverKey = response.optString("serverPublicKey")
+                prefs.edit()
+                    .putBoolean("paired", true)
+                    .putLong("request_counter", 0L)
+                    .apply()
+                if (serverKey.isNotBlank()) prefs.edit().putString("server_public_key", serverKey).apply()
                 runOnUiThread {
-                    status.text = "PIGA Phone Bridge\n\nCONNECTED / PAIRED\nDevice: $deviceId"
+                    status.text = "PIGA Phone Bridge\n\nPAIRED\nStarting signed runtime…\nDevice: $deviceId"
                     pairButton.isEnabled = true
                     confirmButton.isEnabled = false
+                    startBridgeRuntime()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -154,6 +183,15 @@ class MainActivity : Activity() {
                     confirmButton.isEnabled = true
                 }
             }
+        }.start()
+    }
+
+    private fun startBridgeRuntime() {
+        val intent = Intent(this, BridgeService::class.java)
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+        Thread {
+            Thread.sleep(1600)
+            runOnUiThread { refreshRuntimeStatus() }
         }.start()
     }
 
