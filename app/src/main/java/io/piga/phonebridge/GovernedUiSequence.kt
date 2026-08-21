@@ -19,6 +19,12 @@ object GovernedUiSequence {
         val detail: String
     )
 
+    fun execute(payload: JSONObject): SequenceResult {
+        val context = PigaApplication.contextOrNull()
+            ?: return SequenceResult(false, 0, "Application context unavailable; re-entry required.")
+        return execute(context, payload)
+    }
+
     fun execute(context: Context, payload: JSONObject): SequenceResult {
         val sequenceId = payload.optString("sequenceId").trim()
         if (!sequenceId.matches(Regex("^[A-Za-z0-9._:-]{8,120}$"))) {
@@ -57,6 +63,8 @@ object GovernedUiSequence {
                 return SequenceResult(false, savedNextStep, "Material UI change since checkpoint; re-entry required.")
             }
             startIndex = savedNextStep
+        } else if (savedStatus == "blocked") {
+            return SequenceResult(false, savedNextStep, "Sequence is blocked; explicit re-entry is required before retry.")
         } else {
             prefs.edit()
                 .putString("${prefix}_id", sequenceId)
