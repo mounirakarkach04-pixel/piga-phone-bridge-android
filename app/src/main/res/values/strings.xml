@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="piga_accessibility_description">PIGA read-only UI evidence sensor. It observes only explicitly allowlisted apps while PIGA autonomy gates are open. It does not click, type, gesture, take screenshots, or perform global actions.</string>
+</resources>
