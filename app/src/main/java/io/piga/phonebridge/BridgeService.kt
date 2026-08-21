@@ -29,6 +29,10 @@ class BridgeService : Service() {
     private val running = AtomicBoolean(false)
     private val alias = "piga_phone_bridge_device_key"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
+    private val ttsLock = Object()
+    @Volatile private var ttsEngine: TextToSpeech? = null
+    @Volatile private var ttsInitialized = false
+    @Volatile private var ttsInitFailed = false
 
     override fun onCreate() {
         super.onCreate()
@@ -43,6 +47,13 @@ class BridgeService : Service() {
 
     override fun onDestroy() {
         running.set(false)
+        synchronized(ttsLock) {
+            ttsEngine?.stop()
+            ttsEngine?.shutdown()
+            ttsEngine = null
+            ttsInitialized = false
+            ttsInitFailed = false
+        }
         super.onDestroy()
     }
 
@@ -208,24 +219,38 @@ class BridgeService : Service() {
     private fun executeTextToSpeech(payload: JSONObject): String {
         val text = payload.optString("text").trim()
         require(text.isNotBlank() && text.length <= 4000) { "TTS payload invalid." }
-        var engine: TextToSpeech? = null
-        val lock = Object()
-        var initialized = false
-        var initOk = false
-        engine = TextToSpeech(applicationContext) { status ->
-            synchronized(lock) {
-                initialized = true
-                initOk = status == TextToSpeech.SUCCESS
-                lock.notifyAll()
+
+        val engine = synchronized(ttsLock) {
+            if (ttsEngine == null) {
+                ttsInitialized = false
+                ttsInitFailed = false
+                ttsEngine = TextToSpeech(applicationContext) { status ->
+                    synchronized(ttsLock) {
+                        ttsInitialized = status == TextToSpeech.SUCCESS
+                        ttsInitFailed = status != TextToSpeech.SUCCESS
+                        ttsLock.notifyAll()
+                    }
+                }
             }
+
+            val deadline = System.currentTimeMillis() + 5000L
+            while (!ttsInitialized && !ttsInitFailed) {
+                val remaining = deadline - System.currentTimeMillis()
+                if (remaining <= 0L) break
+                ttsLock.wait(remaining)
+            }
+
+            if (!ttsInitialized) {
+                ttsEngine?.shutdown()
+                ttsEngine = null
+                ttsInitFailed = false
+                throw IllegalStateException("Text-to-speech engine unavailable.")
+            }
+            ttsEngine ?: throw IllegalStateException("Text-to-speech engine unavailable.")
         }
-        synchronized(lock) {
-            if (!initialized) lock.wait(5000)
-        }
-        require(initOk) { "Text-to-speech engine unavailable." }
+
         engine.language = Locale.getDefault()
         val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "piga-${UUID.randomUUID()}")
-        engine.shutdown()
         require(result != TextToSpeech.ERROR) { "Text-to-speech failed." }
         return "Text-to-Speech lokal angestoßen."
     }
