@@ -5,10 +5,15 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.speech.tts.TextToSpeech
 import android.util.Base64
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -16,6 +21,7 @@ import java.net.URL
 import java.security.KeyStore
 import java.security.Signature
 import java.time.Instant
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -107,8 +113,16 @@ class BridgeService : Service() {
         val leaseUntil = command.optString("leaseUntil")
         val payload = command.optJSONObject("payload")
 
-        if (commandId.isBlank() || type != "local_notification" || scope != "pocket.notification" ||
-            commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null) {
+        val allowed = mapOf(
+            "local_notification" to "pocket.notification",
+            "clipboard_write" to "pocket.clipboard.write",
+            "url_intent" to "pocket.intent.url",
+            "text_to_speech" to "pocket.tts",
+            "supported_app_launch" to "pocket.app.launch",
+            "share_text" to "pocket.share.text"
+        )
+
+        if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
             if (commandId.isNotBlank()) sendResult(root, deviceId, pairingId, commandId, "rejected", "Command schema or allowlist rejected.")
             return
         }
@@ -135,15 +149,12 @@ class BridgeService : Service() {
 
         val masterAutonomy = prefs.getBoolean("master_autonomy", false)
         val emergencyStop = prefs.getBoolean("emergency_stop", false)
-        if (!masterAutonomy || emergencyStop || !hasNotificationPermission()) {
+        if (!masterAutonomy || emergencyStop) {
             sendResult(root, deviceId, pairingId, commandId, "rejected", "Local safety gate blocked execution.")
             return
         }
-
-        val title = payload.optString("title").trim()
-        val body = payload.optString("body").trim()
-        if (title.isBlank() || body.isBlank()) {
-            sendResult(root, deviceId, pairingId, commandId, "rejected", "Notification payload invalid.")
+        if (type == "local_notification" && !hasNotificationPermission()) {
+            sendResult(root, deviceId, pairingId, commandId, "rejected", "Notification permission missing.")
             return
         }
 
@@ -151,11 +162,97 @@ class BridgeService : Service() {
         prefs.edit().putBoolean("command_nonce_$commandNonce", true).apply()
 
         try {
-            showLocalNotification(commandId, title, body)
-            sendResult(root, deviceId, pairingId, commandId, "succeeded", "Benachrichtigung lokal ausgeführt.")
+            val detail = when (type) {
+                "local_notification" -> executeNotification(commandId, payload)
+                "clipboard_write" -> executeClipboard(payload)
+                "url_intent" -> executeUrlIntent(payload)
+                "text_to_speech" -> executeTextToSpeech(payload)
+                "supported_app_launch" -> executeAppLaunch(payload)
+                "share_text" -> executeShareText(payload)
+                else -> throw IllegalStateException("Unsupported command type")
+            }
+            sendResult(root, deviceId, pairingId, commandId, "succeeded", detail)
         } catch (e: Exception) {
-            sendResult(root, deviceId, pairingId, commandId, "failed", e.message ?: "Local notification failed.")
+            sendResult(root, deviceId, pairingId, commandId, "failed", e.message ?: "Local capability failed.")
         }
+    }
+
+    private fun executeNotification(commandId: String, payload: JSONObject): String {
+        val title = payload.optString("title").trim()
+        val body = payload.optString("body").trim()
+        require(title.isNotBlank() && body.isNotBlank()) { "Notification payload invalid." }
+        showLocalNotification(commandId, title, body)
+        return "Benachrichtigung lokal ausgeführt."
+    }
+
+    private fun executeClipboard(payload: JSONObject): String {
+        val text = payload.optString("text")
+        require(text.isNotBlank() && text.length <= 10000) { "Clipboard payload invalid." }
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("PIGA Pocket Enterprise", text))
+        return "Clipboard lokal aktualisiert."
+    }
+
+    private fun executeUrlIntent(payload: JSONObject): String {
+        val raw = payload.optString("url").trim()
+        require(raw.length in 1..2048) { "URL payload invalid." }
+        val uri = Uri.parse(raw)
+        val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        require(scheme == "https" || scheme == "http") { "Only http/https URL intents are admitted." }
+        val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        require(intent.resolveActivity(packageManager) != null) { "No handler available for URL." }
+        startActivity(intent)
+        return "URL/Deep-Link Intent geöffnet."
+    }
+
+    private fun executeTextToSpeech(payload: JSONObject): String {
+        val text = payload.optString("text").trim()
+        require(text.isNotBlank() && text.length <= 4000) { "TTS payload invalid." }
+        var engine: TextToSpeech? = null
+        val lock = Object()
+        var initialized = false
+        var initOk = false
+        engine = TextToSpeech(applicationContext) { status ->
+            synchronized(lock) {
+                initialized = true
+                initOk = status == TextToSpeech.SUCCESS
+                lock.notifyAll()
+            }
+        }
+        synchronized(lock) {
+            if (!initialized) lock.wait(5000)
+        }
+        require(initOk) { "Text-to-speech engine unavailable." }
+        engine.language = Locale.getDefault()
+        val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "piga-${UUID.randomUUID()}")
+        engine.shutdown()
+        require(result != TextToSpeech.ERROR) { "Text-to-speech failed." }
+        return "Text-to-Speech lokal angestoßen."
+    }
+
+    private fun executeAppLaunch(payload: JSONObject): String {
+        val packageName = payload.optString("packageName").trim()
+        require(packageName.matches(Regex("^[A-Za-z0-9_.]{3,200}$"))) { "Package name invalid." }
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+            ?: throw IllegalStateException("App not installed or not launchable.")
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(launch)
+        return "Unterstützte App gestartet."
+    }
+
+    private fun executeShareText(payload: JSONObject): String {
+        val text = payload.optString("text").trim()
+        require(text.isNotBlank() && text.length <= 10000) { "Share payload invalid." }
+        val targetPackage = payload.optString("packageName").trim()
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+            if (targetPackage.isNotBlank()) setPackage(targetPackage)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        require(send.resolveActivity(packageManager) != null) { "No admitted share target available." }
+        startActivity(send)
+        return if (targetPackage.isBlank()) "Share-Intent geöffnet." else "Share-Intent an Ziel-App geöffnet."
     }
 
     private fun sendAck(root: String, deviceId: String, pairingId: String, commandId: String, status: String) {
