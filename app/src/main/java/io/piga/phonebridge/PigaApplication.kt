@@ -1,0 +1,26 @@
+package io.piga.phonebridge
+
+import android.app.Application
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
+
+class PigaApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+        val watchdog = PeriodicWorkRequestBuilder<BridgeWatchdogWorker>(15, TimeUnit.MINUTES)
+            .setConstraints(constraints)
+            .build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "piga_bridge_watchdog",
+            ExistingPeriodicWorkPolicy.UPDATE,
+            watchdog
+        )
+    }
+}
