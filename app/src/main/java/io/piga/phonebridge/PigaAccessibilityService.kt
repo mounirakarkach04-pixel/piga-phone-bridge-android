@@ -13,14 +13,6 @@ import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-/**
- * PIGA accessibility evidence sensor with one deliberately narrow write path:
- * governed click by exact resource view-id.
- *
- * No coordinate clicks, gestures, text entry, global actions or screenshots.
- * Every click requires an allowlisted package, exact expected UI evidence hash,
- * exact target view-id, a clickable/enabled node and an optional postcondition.
- */
 class PigaAccessibilityService : AccessibilityService() {
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -59,7 +51,6 @@ class PigaAccessibilityService : AccessibilityService() {
         if (event == null || !gateOpen()) return
         val packageName = event.packageName?.toString()?.trim().orEmpty()
         if (packageName.isBlank() || packageName !in allowedPackages()) return
-
         val root = rootInActiveWindow ?: return
         persistSnapshot(packageName, event, root)
     }
@@ -96,8 +87,8 @@ class PigaAccessibilityService : AccessibilityService() {
         }
 
         val lastPackage = prefs.getString("accessibility_last_package", "").orEmpty()
-        val lastHash = prefs.getString("accessibility_last_hash", "").orEmpty().lowercase()
-        if (lastPackage != targetPackage || lastHash != expectedStateHash) {
+        val lastStateHash = prefs.getString("accessibility_last_state_hash", "").orEmpty().lowercase()
+        if (lastPackage != targetPackage || lastStateHash != expectedStateHash) {
             return UiActionResult(false, "Material UI state change detected; re-entry required.")
         }
 
@@ -110,17 +101,18 @@ class PigaAccessibilityService : AccessibilityService() {
                 val activePackage = root.packageName?.toString().orEmpty()
                 require(activePackage == targetPackage) { "Foreground package changed; re-entry required." }
 
-                val before = snapshotWithoutEvent(targetPackage, root)
-                val beforeHash = sha256(before.toString())
-                require(beforeHash == expectedStateHash) { "UI evidence hash changed; re-entry required." }
+                val beforeState = stableState(targetPackage, root)
+                val beforeStateHash = sha256(beforeState.toString())
+                require(beforeStateHash == expectedStateHash) { "UI state changed; re-entry required." }
 
                 val matches = root.findAccessibilityNodeInfosByViewId(targetViewId)
                 require(matches.size == 1) { "Target view-id must resolve to exactly one node." }
                 val node = matches.first()
                 require(node.isEnabled && node.isClickable) { "Target node is not enabled/clickable." }
 
-                val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                require(clicked) { "Android rejected accessibility click." }
+                require(node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    "Android rejected accessibility click."
+                }
 
                 mainHandler.postDelayed({
                     try {
@@ -134,17 +126,24 @@ class PigaAccessibilityService : AccessibilityService() {
                             require(postMatches.isNotEmpty()) { "Postcondition view-id not observed." }
                         }
 
-                        val after = snapshotWithoutEvent(targetPackage, afterRoot)
-                        val afterHash = sha256(after.toString())
+                        val afterState = stableState(targetPackage, afterRoot)
+                        val afterStateHash = sha256(afterState.toString())
+                        val receipt = auditSnapshot(targetPackage, null, afterRoot, afterStateHash)
+                        val evidenceHash = sha256(receipt.toString())
+
                         prefs.edit()
-                            .putString("accessibility_last_snapshot", after.toString())
-                            .putString("accessibility_last_hash", afterHash)
+                            .putString("accessibility_last_snapshot", receipt.toString())
+                            .putString("accessibility_last_hash", evidenceHash)
+                            .putString("accessibility_last_state_hash", afterStateHash)
                             .putString("accessibility_last_package", targetPackage)
                             .putString("accessibility_last_time", Instant.now().toString())
                             .putString("accessibility_last_action", "click:$targetViewId")
                             .putString("accessibility_last_action_result", "succeeded")
                             .apply()
-                        result = UiActionResult(true, "Governed UI click succeeded; postcondition verified; stateHash=$afterHash")
+                        result = UiActionResult(
+                            true,
+                            "Governed UI click succeeded; postcondition verified; stateHash=$afterStateHash; evidenceHash=$evidenceHash"
+                        )
                     } catch (e: Exception) {
                         prefs.edit().putString("accessibility_last_action_result", "failed:${e.message}").apply()
                         result = UiActionResult(false, e.message ?: "Postcondition verification failed.")
@@ -177,41 +176,49 @@ class PigaAccessibilityService : AccessibilityService() {
             ?.filter { it.matches(Regex("^[A-Za-z0-9_.]{3,200}$")) }
             ?.toSet()
             .orEmpty()
-        // Fail closed: until a governed allowlist is explicitly provisioned,
-        // the service can only inspect/click inside the PIGA app itself.
         return if (configured.isEmpty()) setOf(packageName) else configured + packageName
     }
 
     private fun persistSnapshot(packageName: String, event: AccessibilityEvent, root: AccessibilityNodeInfo) {
-        val snapshot = snapshot(packageName, event, root)
+        val state = stableState(packageName, root)
+        val stateHash = sha256(state.toString())
+        val receipt = auditSnapshot(packageName, event, root, stateHash)
+        val evidenceHash = sha256(receipt.toString())
         prefs.edit()
-            .putString("accessibility_last_snapshot", snapshot.toString())
-            .putString("accessibility_last_hash", sha256(snapshot.toString()))
+            .putString("accessibility_last_snapshot", receipt.toString())
+            .putString("accessibility_last_hash", evidenceHash)
+            .putString("accessibility_last_state_hash", stateHash)
             .putString("accessibility_last_package", packageName)
             .putString("accessibility_last_time", Instant.now().toString())
             .apply()
     }
 
-    private fun snapshot(
-        packageName: String,
-        event: AccessibilityEvent,
-        root: AccessibilityNodeInfo
-    ): JSONObject {
-        val base = snapshotWithoutEvent(packageName, root)
-        base.put("eventType", event.eventType)
-        base.put("className", event.className?.toString().orEmpty().take(160))
-        return base
-    }
-
-    private fun snapshotWithoutEvent(packageName: String, root: AccessibilityNodeInfo): JSONObject {
+    private fun stableState(packageName: String, root: AccessibilityNodeInfo): JSONObject {
         val nodes = JSONArray()
         collect(root, nodes, depth = 0, budget = intArrayOf(80))
         return JSONObject()
-            .put("schema", "piga.ui.snapshot.v1")
-            .put("capturedAt", Instant.now().toString())
+            .put("schema", "piga.ui.state.v1")
             .put("packageName", packageName)
             .put("nodeCount", nodes.length())
             .put("nodes", nodes)
+    }
+
+    private fun auditSnapshot(
+        packageName: String,
+        event: AccessibilityEvent?,
+        root: AccessibilityNodeInfo,
+        stateHash: String
+    ): JSONObject {
+        val state = stableState(packageName, root)
+        return JSONObject()
+            .put("schema", "piga.ui.evidence.v1")
+            .put("capturedAt", Instant.now().toString())
+            .put("packageName", packageName)
+            .put("stateHash", stateHash)
+            .put("eventType", event?.eventType ?: 0)
+            .put("className", event?.className?.toString().orEmpty().take(160))
+            .put("nodeCount", state.getInt("nodeCount"))
+            .put("nodes", state.getJSONArray("nodes"))
     }
 
     private fun collect(
@@ -222,18 +229,17 @@ class PigaAccessibilityService : AccessibilityService() {
     ) {
         if (budget[0] <= 0 || depth > 8) return
         budget[0]--
-
-        val item = JSONObject()
-            .put("depth", depth)
-            .put("class", node.className?.toString().orEmpty().take(120))
-            .put("viewId", node.viewIdResourceName?.take(180).orEmpty())
-            .put("text", minimize(node.text?.toString()))
-            .put("description", minimize(node.contentDescription?.toString()))
-            .put("clickable", node.isClickable)
-            .put("enabled", node.isEnabled)
-            .put("editable", node.isEditable)
-        out.put(item)
-
+        out.put(
+            JSONObject()
+                .put("depth", depth)
+                .put("class", node.className?.toString().orEmpty().take(120))
+                .put("viewId", node.viewIdResourceName?.take(180).orEmpty())
+                .put("text", minimize(node.text?.toString()))
+                .put("description", minimize(node.contentDescription?.toString()))
+                .put("clickable", node.isClickable)
+                .put("enabled", node.isEnabled)
+                .put("editable", node.isEditable)
+        )
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             collect(child, out, depth + 1, budget)
