@@ -130,7 +130,10 @@ class BridgeService : Service() {
             "url_intent" to "pocket.intent.url",
             "text_to_speech" to "pocket.tts",
             "supported_app_launch" to "pocket.app.launch",
-            "share_text" to "pocket.share.text"
+            "share_text" to "pocket.share.text",
+            "ui_click" to "pocket.ui.click",
+            "ui_set_text" to "pocket.ui.set_text",
+            "ui_sequence" to "pocket.ui.sequence"
         )
 
         if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
@@ -168,6 +171,10 @@ class BridgeService : Service() {
             sendResult(root, deviceId, pairingId, commandId, "rejected", "Notification permission missing.")
             return
         }
+        if ((type == "ui_click" || type == "ui_set_text" || type == "ui_sequence") && !prefs.getBoolean("accessibility_connected", false)) {
+            sendResult(root, deviceId, pairingId, commandId, "rejected", "Accessibility service unavailable.")
+            return
+        }
 
         sendAck(root, deviceId, pairingId, commandId, "accepted")
         prefs.edit().putBoolean("command_nonce_$commandNonce", true).apply()
@@ -180,6 +187,9 @@ class BridgeService : Service() {
                 "text_to_speech" -> executeTextToSpeech(payload)
                 "supported_app_launch" -> executeAppLaunch(payload)
                 "share_text" -> executeShareText(payload)
+                "ui_click" -> executeUiClick(payload)
+                "ui_set_text" -> executeUiSetText(payload)
+                "ui_sequence" -> executeUiSequence(payload)
                 else -> throw IllegalStateException("Unsupported command type")
             }
             sendResult(root, deviceId, pairingId, commandId, "succeeded", detail)
@@ -280,6 +290,29 @@ class BridgeService : Service() {
         return if (targetPackage.isBlank()) "Share-Intent geöffnet." else "Share-Intent an Ziel-App geöffnet."
     }
 
+    private fun executeUiClick(payload: JSONObject): String {
+        val result = PigaAccessibilityService.governedClick(payload)
+        require(result.ok) { result.detail }
+        return result.detail
+    }
+
+    private fun executeUiSetText(payload: JSONObject): String {
+        val result = PigaAccessibilityService.governedSetText(payload)
+        require(result.ok) { result.detail }
+        return result.detail
+    }
+
+    private fun executeUiSequence(payload: JSONObject): String {
+        val result = GovernedUiSequence.execute(payload)
+        require(result.ok) { result.detail }
+        prefs.edit()
+            .putInt("ui_sequence_last_completed_steps", result.completedSteps)
+            .putString("ui_sequence_last_result", result.detail)
+            .putString("ui_sequence_last_time", Instant.now().toString())
+            .apply()
+        return result.detail
+    }
+
     private fun sendAck(root: String, deviceId: String, pairingId: String, commandId: String, status: String) {
         val body = "{\"status\":\"$status\"}"
         val canonicalPath = "/api/bridge/devices/$deviceId/commands/$commandId"
@@ -333,8 +366,8 @@ class BridgeService : Service() {
             connectTimeout = 15000
             readTimeout = 15000
             doOutput = true
-            setRequestProperty("Accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
             setRequestProperty("X-PIGA-Bridge-Pairing-Id", pairingId)
             setRequestProperty("X-PIGA-Bridge-Timestamp", timestamp)
             setRequestProperty("X-PIGA-Bridge-Nonce", nonce)
@@ -349,7 +382,7 @@ class BridgeService : Service() {
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
         connection.disconnect()
-        if (code !in 200..299) throw IllegalStateException("HTTP $code ${text.take(180)}")
+        if (code !in 200..299) throw IllegalStateException("HTTP $code ${text.take(240)}")
         return if (text.isBlank()) JSONObject() else JSONObject(text)
     }
 
@@ -362,51 +395,19 @@ class BridgeService : Service() {
         return Base64.encodeToString(signer.sign(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
     }
 
-    private fun freshNonce(): String = UUID.randomUUID().toString().replace("-", "")
-
-    private fun hasNotificationPermission(): Boolean =
-        Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    private fun freshNonce(): String = UUID.randomUUID().toString()
 
     private fun ensureChannels() {
         if (Build.VERSION.SDK_INT >= 26) {
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(
-                NotificationChannel("piga_runtime", "PIGA Bridge Runtime", NotificationManager.IMPORTANCE_LOW)
-            )
-            manager.createNotificationChannel(
-                NotificationChannel("piga_commands", "PIGA Local Commands", NotificationManager.IMPORTANCE_DEFAULT)
-            )
+            manager.createNotificationChannel(NotificationChannel("piga_bridge", "PIGA Phone Bridge", NotificationManager.IMPORTANCE_LOW))
+            manager.createNotificationChannel(NotificationChannel("piga_local", "PIGA Local Actions", NotificationManager.IMPORTANCE_DEFAULT))
         }
     }
 
-    private fun showLocalNotification(commandId: String, title: String, body: String) {
-        val notification = if (Build.VERSION.SDK_INT >= 26) {
-            Notification.Builder(this, "piga_commands")
-                .setContentTitle(title)
-                .setContentText(body)
-                .setSmallIcon(android.R.drawable.stat_notify_chat)
-                .setAutoCancel(true)
-                .build()
-        } else {
-            Notification.Builder(this)
-                .setContentTitle(title)
-                .setContentText(body)
-                .setSmallIcon(android.R.drawable.stat_notify_chat)
-                .setAutoCancel(true)
-                .build()
-        }
-        getSystemService(NotificationManager::class.java).notify(commandId.hashCode(), notification)
-    }
-
-    private fun statusNotification(text: String): Notification = if (Build.VERSION.SDK_INT >= 26) {
-        Notification.Builder(this, "piga_runtime")
-            .setContentTitle("PIGA Phone Bridge")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setOngoing(true)
-            .build()
-    } else {
-        Notification.Builder(this)
+    private fun statusNotification(text: String): Notification {
+        val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, "piga_bridge") else Notification.Builder(this)
+        return builder
             .setContentTitle("PIGA Phone Bridge")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
@@ -415,6 +416,22 @@ class BridgeService : Service() {
     }
 
     private fun updateNotification(text: String) {
-        getSystemService(NotificationManager::class.java).notify(2001, statusNotification(text))
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(2001, statusNotification(text))
     }
+
+    private fun showLocalNotification(commandId: String, title: String, body: String) {
+        val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, "piga_local") else Notification.Builder(this)
+        val notification = builder
+            .setContentTitle(title)
+            .setContentText(body)
+            .setSmallIcon(android.R.drawable.stat_notify_more)
+            .setAutoCancel(true)
+            .build()
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(commandId.hashCode(), notification)
+    }
+
+    private fun hasNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 }
