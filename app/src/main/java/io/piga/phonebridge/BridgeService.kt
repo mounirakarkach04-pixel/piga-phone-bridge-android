@@ -131,7 +131,8 @@ class BridgeService : Service() {
             "text_to_speech" to "pocket.tts",
             "supported_app_launch" to "pocket.app.launch",
             "share_text" to "pocket.share.text",
-            "ui_click" to "pocket.ui.click"
+            "ui_click" to "pocket.ui.click",
+            "ui_set_text" to "pocket.ui.set_text"
         )
 
         if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
@@ -169,7 +170,7 @@ class BridgeService : Service() {
             sendResult(root, deviceId, pairingId, commandId, "rejected", "Notification permission missing.")
             return
         }
-        if (type == "ui_click" && !prefs.getBoolean("accessibility_connected", false)) {
+        if ((type == "ui_click" || type == "ui_set_text") && !prefs.getBoolean("accessibility_connected", false)) {
             sendResult(root, deviceId, pairingId, commandId, "rejected", "Accessibility service unavailable.")
             return
         }
@@ -186,6 +187,7 @@ class BridgeService : Service() {
                 "supported_app_launch" -> executeAppLaunch(payload)
                 "share_text" -> executeShareText(payload)
                 "ui_click" -> executeUiClick(payload)
+                "ui_set_text" -> executeUiSetText(payload)
                 else -> throw IllegalStateException("Unsupported command type")
             }
             sendResult(root, deviceId, pairingId, commandId, "succeeded", detail)
@@ -288,6 +290,12 @@ class BridgeService : Service() {
 
     private fun executeUiClick(payload: JSONObject): String {
         val result = PigaAccessibilityService.governedClick(payload)
+        require(result.ok) { result.detail }
+        return result.detail
+    }
+
+    private fun executeUiSetText(payload: JSONObject): String {
+        val result = PigaAccessibilityService.governedSetText(payload)
         require(result.ok) { result.detail }
         return result.detail
     }
