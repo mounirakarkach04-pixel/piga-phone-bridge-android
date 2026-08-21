@@ -19,6 +19,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
@@ -35,6 +36,7 @@ class MainActivity : Activity() {
     private val currentBaseUrl = "https://d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev"
     private val legacyBaseHost = "ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
+
     private lateinit var status: TextView
     private lateinit var baseUrl: EditText
     private lateinit var deviceIdField: EditText
@@ -42,6 +44,9 @@ class MainActivity : Activity() {
     private lateinit var bootstrapCodeInput: EditText
     private lateinit var pairButton: Button
     private lateinit var confirmButton: Button
+    private lateinit var masterAutonomySwitch: Switch
+    private lateinit var emergencyStopSwitch: Switch
+    private lateinit var permissionStatus: TextView
 
     private var challengeId: String? = null
     private var signingPayload: String? = null
@@ -56,11 +61,6 @@ class MainActivity : Activity() {
         publicKeyBase64 = getPublicKeyBase64()
 
         status = TextView(this).apply {
-            text = if (prefs.getBoolean("paired", false)) {
-                "PIGA Phone Bridge\n\nStatus: PAIRED\nRuntime starting…"
-            } else {
-                "PIGA Phone Bridge\n\nDevice identity ready in Android Keystore.\nStatus: NOT PAIRED\n\nCopy BOTH the Device ID and Public Key below into Phone Bridge Pairing in the authenticated PIGA Control Plane. Generate a fresh Owner Bootstrap, then paste that one-time code here."
-            }
             textSize = 18f
             gravity = Gravity.CENTER
             setPadding(32, 32, 32, 24)
@@ -84,7 +84,7 @@ class MainActivity : Activity() {
             text = "Copy device ID"
             setOnClickListener {
                 copyToClipboard("PIGA Android Device ID", deviceIdField.text.toString())
-                status.text = "Device ID copied. Paste this exact value into the Android Device ID field in Phone Bridge Pairing."
+                status.text = "Device ID copied."
             }
         }
 
@@ -100,7 +100,42 @@ class MainActivity : Activity() {
             text = "Copy public key"
             setOnClickListener {
                 copyToClipboard("PIGA Android Keystore Public Key", publicKeyField.text.toString())
-                status.text = "Public key copied. Paste this exact value into the Android Keystore Public Key field in Phone Bridge Pairing."
+                status.text = "Public key copied."
+            }
+        }
+
+        val safetyTitle = TextView(this).apply {
+            text = "\nNative Safety Controls"
+            textSize = 20f
+        }
+
+        masterAutonomySwitch = Switch(this).apply {
+            text = "Master-Autonomy"
+            isChecked = prefs.getBoolean("master_autonomy", false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean("master_autonomy", checked).apply()
+                if (prefs.getBoolean("paired", false)) startBridgeRuntime()
+                refreshRuntimeStatus()
+            }
+        }
+
+        emergencyStopSwitch = Switch(this).apply {
+            text = "Emergency Stop"
+            isChecked = prefs.getBoolean("emergency_stop", false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean("emergency_stop", checked).apply()
+                if (prefs.getBoolean("paired", false)) startBridgeRuntime()
+                refreshRuntimeStatus()
+            }
+        }
+
+        permissionStatus = TextView(this).apply { textSize = 16f }
+        val requestPermissionButton = Button(this).apply {
+            text = "Benachrichtigungen erlauben / Status prüfen"
+            setOnClickListener {
+                ensureNotifications()
+                if (prefs.getBoolean("paired", false)) startBridgeRuntime()
+                refreshRuntimeStatus()
             }
         }
 
@@ -123,31 +158,42 @@ class MainActivity : Activity() {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(36, 80, 36, 36)
+            setPadding(36, 60, 36, 36)
             addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(baseUrl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(deviceIdField, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(copyDeviceIdButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(publicKeyField, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(copyPublicKeyButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(safetyTitle, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(masterAutonomySwitch, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(emergencyStopSwitch, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(permissionStatus, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(requestPermissionButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(bootstrapCodeInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(pairButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(confirmButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         setContentView(layout)
 
-        if (prefs.getBoolean("paired", false)) {
-            startBridgeRuntime()
-            Thread {
-                Thread.sleep(1200)
-                runOnUiThread { refreshRuntimeStatus() }
-            }.start()
-        }
+        refreshRuntimeStatus()
+        if (prefs.getBoolean("paired", false)) startBridgeRuntime()
     }
 
     override fun onResume() {
         super.onResume()
-        if (::status.isInitialized && prefs.getBoolean("paired", false)) refreshRuntimeStatus()
+        if (::status.isInitialized) {
+            refreshRuntimeStatus()
+            if (prefs.getBoolean("paired", false)) startBridgeRuntime()
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 1001) {
+            refreshRuntimeStatus()
+            if (prefs.getBoolean("paired", false)) startBridgeRuntime()
+        }
     }
 
     private fun resolveBaseUrl(): String {
@@ -177,11 +223,20 @@ class MainActivity : Activity() {
         clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
     }
 
+    private fun hasNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
     private fun refreshRuntimeStatus() {
         val deviceId = ensureDeviceId()
+        val paired = prefs.getBoolean("paired", false)
         val runtime = prefs.getString("runtime_status", "STARTING") ?: "STARTING"
         val lastPoll = prefs.getLong("last_poll_ms", 0L)
-        status.text = "PIGA Phone Bridge\n\nStatus: PAIRED\nRuntime: $runtime\nLast poll: ${if (lastPoll > 0) lastPoll else "pending"}\nDevice: $deviceId"
+        val safetySync = prefs.getLong("last_safety_sync_ms", 0L)
+        val master = prefs.getBoolean("master_autonomy", false)
+        val stop = prefs.getBoolean("emergency_stop", false)
+        val notifications = hasNotificationPermission()
+        permissionStatus.text = "Android notifications: ${if (notifications) "ERTEILT" else "NICHT ERTEILT"}"
+        status.text = "PIGA Phone Bridge\n\nStatus: ${if (paired) "PAIRED" else "NOT PAIRED"}\nRuntime: $runtime\nMaster-Autonomy: ${if (master) "ON" else "OFF"}\nEmergency Stop: ${if (stop) "ON" else "OFF"}\nNotifications: ${if (notifications) "GRANTED" else "DENIED"}\nLast poll: ${if (lastPoll > 0) lastPoll else "pending"}\nSafety sync: ${if (safetySync > 0) safetySync else "pending"}\nDevice: $deviceId"
     }
 
     private fun startPairing() {
@@ -252,13 +307,12 @@ class MainActivity : Activity() {
                 prefs.edit()
                     .putBoolean("paired", true)
                     .putString("pairing_id", pairingId)
-                    .putLong("request_counter", 0L)
                     .apply()
                 runOnUiThread {
                     bootstrapCodeInput.setText("")
-                    status.text = "PIGA Phone Bridge\n\nPAIRED\nStarting signed runtime…\nDevice: $deviceId"
                     pairButton.isEnabled = true
                     confirmButton.isEnabled = false
+                    refreshRuntimeStatus()
                     startBridgeRuntime()
                 }
             } catch (e: Exception) {
@@ -274,7 +328,7 @@ class MainActivity : Activity() {
         val intent = Intent(this, BridgeService::class.java)
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
         Thread {
-            Thread.sleep(1600)
+            Thread.sleep(1200)
             runOnUiThread { refreshRuntimeStatus() }
         }.start()
     }
