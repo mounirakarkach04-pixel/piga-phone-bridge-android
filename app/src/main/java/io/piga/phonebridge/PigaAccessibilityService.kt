@@ -2,6 +2,7 @@ package io.piga.phonebridge
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
@@ -26,6 +27,12 @@ class PigaAccessibilityService : AccessibilityService() {
             val instance = activeInstance
                 ?: return UiActionResult(false, "Accessibility service unavailable.")
             return instance.executeGovernedClick(payload)
+        }
+
+        fun governedSetText(payload: JSONObject): UiActionResult {
+            val instance = activeInstance
+                ?: return UiActionResult(false, "Accessibility service unavailable.")
+            return instance.executeGovernedSetText(payload)
         }
     }
 
@@ -73,6 +80,103 @@ class PigaAccessibilityService : AccessibilityService() {
         val expectedStateHash = payload.optString("expectedStateHash").trim().lowercase()
         val postconditionViewId = payload.optString("postconditionViewId").trim()
 
+        val validation = validateTarget(targetPackage, targetViewId, expectedStateHash)
+        if (validation != null) return validation
+
+        val latch = CountDownLatch(1)
+        var result = UiActionResult(false, "UI action did not execute.")
+        mainHandler.post {
+            try {
+                val root = validatedRoot(targetPackage, expectedStateHash)
+                val node = exactlyOneNode(root, targetViewId)
+                require(node.isEnabled && node.isClickable) { "Target node is not enabled/clickable." }
+                require(node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    "Android rejected accessibility click."
+                }
+
+                mainHandler.postDelayed({
+                    result = verifyAndPersistAfterAction(
+                        targetPackage = targetPackage,
+                        actionLabel = "click:$targetViewId",
+                        postconditionViewId = postconditionViewId,
+                        expectedText = null
+                    )
+                    latch.countDown()
+                }, 450L)
+            } catch (e: Exception) {
+                persistFailure(e)
+                result = UiActionResult(false, e.message ?: "Governed UI click failed.")
+                latch.countDown()
+            }
+        }
+
+        if (!latch.await(3, TimeUnit.SECONDS)) {
+            return UiActionResult(false, "Timed out waiting for UI postcondition.")
+        }
+        return result
+    }
+
+    private fun executeGovernedSetText(payload: JSONObject): UiActionResult {
+        if (!gateOpen()) return UiActionResult(false, "Local PIGA safety gate blocked UI action.")
+
+        val targetPackage = payload.optString("packageName").trim()
+        val targetViewId = payload.optString("viewId").trim()
+        val expectedStateHash = payload.optString("expectedStateHash").trim().lowercase()
+        val postconditionViewId = payload.optString("postconditionViewId").trim()
+        val text = payload.optString("text")
+
+        val validation = validateTarget(targetPackage, targetViewId, expectedStateHash)
+        if (validation != null) return validation
+        if (text.isEmpty() || text.length > 2000) {
+            return UiActionResult(false, "Text payload must contain 1..2000 characters.")
+        }
+
+        val latch = CountDownLatch(1)
+        var result = UiActionResult(false, "UI text action did not execute.")
+        mainHandler.post {
+            try {
+                val root = validatedRoot(targetPackage, expectedStateHash)
+                val node = exactlyOneNode(root, targetViewId)
+                require(node.isEnabled && node.isEditable) { "Target node is not enabled/editable." }
+                require(!node.isPassword) { "Human-reserved sensitive field: password/PIN entry blocked." }
+                require(!looksSensitive(node, targetViewId)) {
+                    "Human-reserved sensitive field detected; autonomous text entry blocked."
+                }
+
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                }
+                require(node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+                    "Android rejected accessibility text entry."
+                }
+
+                mainHandler.postDelayed({
+                    result = verifyAndPersistAfterAction(
+                        targetPackage = targetPackage,
+                        actionLabel = "set_text:$targetViewId",
+                        postconditionViewId = postconditionViewId,
+                        expectedText = text
+                    )
+                    latch.countDown()
+                }, 500L)
+            } catch (e: Exception) {
+                persistFailure(e)
+                result = UiActionResult(false, e.message ?: "Governed UI text entry failed.")
+                latch.countDown()
+            }
+        }
+
+        if (!latch.await(3, TimeUnit.SECONDS)) {
+            return UiActionResult(false, "Timed out waiting for UI text postcondition.")
+        }
+        return result
+    }
+
+    private fun validateTarget(
+        targetPackage: String,
+        targetViewId: String,
+        expectedStateHash: String
+    ): UiActionResult? {
         if (!targetPackage.matches(Regex("^[A-Za-z0-9_.]{3,200}$"))) {
             return UiActionResult(false, "Invalid target package.")
         }
@@ -91,77 +195,91 @@ class PigaAccessibilityService : AccessibilityService() {
         if (lastPackage != targetPackage || lastStateHash != expectedStateHash) {
             return UiActionResult(false, "Material UI state change detected; re-entry required.")
         }
+        return null
+    }
 
-        val latch = CountDownLatch(1)
-        var result = UiActionResult(false, "UI action did not execute.")
-        mainHandler.post {
-            try {
-                val root = rootInActiveWindow
-                    ?: throw IllegalStateException("No active accessibility window.")
-                val activePackage = root.packageName?.toString().orEmpty()
-                require(activePackage == targetPackage) { "Foreground package changed; re-entry required." }
+    private fun validatedRoot(targetPackage: String, expectedStateHash: String): AccessibilityNodeInfo {
+        val root = rootInActiveWindow
+            ?: throw IllegalStateException("No active accessibility window.")
+        val activePackage = root.packageName?.toString().orEmpty()
+        require(activePackage == targetPackage) { "Foreground package changed; re-entry required." }
+        val beforeStateHash = sha256(stableState(targetPackage, root).toString())
+        require(beforeStateHash == expectedStateHash) { "UI state changed; re-entry required." }
+        return root
+    }
 
-                val beforeState = stableState(targetPackage, root)
-                val beforeStateHash = sha256(beforeState.toString())
-                require(beforeStateHash == expectedStateHash) { "UI state changed; re-entry required." }
+    private fun exactlyOneNode(root: AccessibilityNodeInfo, viewId: String): AccessibilityNodeInfo {
+        val matches = root.findAccessibilityNodeInfosByViewId(viewId)
+        require(matches.size == 1) { "Target view-id must resolve to exactly one node." }
+        return matches.first()
+    }
 
-                val matches = root.findAccessibilityNodeInfosByViewId(targetViewId)
-                require(matches.size == 1) { "Target view-id must resolve to exactly one node." }
-                val node = matches.first()
-                require(node.isEnabled && node.isClickable) { "Target node is not enabled/clickable." }
+    private fun verifyAndPersistAfterAction(
+        targetPackage: String,
+        actionLabel: String,
+        postconditionViewId: String,
+        expectedText: String?
+    ): UiActionResult {
+        return try {
+            val afterRoot = rootInActiveWindow
+                ?: throw IllegalStateException("No active window after action.")
+            val afterPackage = afterRoot.packageName?.toString().orEmpty()
+            require(afterPackage == targetPackage) { "Postcondition package mismatch." }
 
-                require(node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                    "Android rejected accessibility click."
-                }
-
-                mainHandler.postDelayed({
-                    try {
-                        val afterRoot = rootInActiveWindow
-                            ?: throw IllegalStateException("No active window after click.")
-                        val afterPackage = afterRoot.packageName?.toString().orEmpty()
-                        require(afterPackage == targetPackage) { "Postcondition package mismatch." }
-
-                        if (postconditionViewId.isNotBlank()) {
-                            val postMatches = afterRoot.findAccessibilityNodeInfosByViewId(postconditionViewId)
-                            require(postMatches.isNotEmpty()) { "Postcondition view-id not observed." }
-                        }
-
-                        val afterState = stableState(targetPackage, afterRoot)
-                        val afterStateHash = sha256(afterState.toString())
-                        val receipt = auditSnapshot(targetPackage, null, afterRoot, afterStateHash)
-                        val evidenceHash = sha256(receipt.toString())
-
-                        prefs.edit()
-                            .putString("accessibility_last_snapshot", receipt.toString())
-                            .putString("accessibility_last_hash", evidenceHash)
-                            .putString("accessibility_last_state_hash", afterStateHash)
-                            .putString("accessibility_last_package", targetPackage)
-                            .putString("accessibility_last_time", Instant.now().toString())
-                            .putString("accessibility_last_action", "click:$targetViewId")
-                            .putString("accessibility_last_action_result", "succeeded")
-                            .apply()
-                        result = UiActionResult(
-                            true,
-                            "Governed UI click succeeded; postcondition verified; stateHash=$afterStateHash; evidenceHash=$evidenceHash"
-                        )
-                    } catch (e: Exception) {
-                        prefs.edit().putString("accessibility_last_action_result", "failed:${e.message}").apply()
-                        result = UiActionResult(false, e.message ?: "Postcondition verification failed.")
-                    } finally {
-                        latch.countDown()
-                    }
-                }, 450L)
-            } catch (e: Exception) {
-                prefs.edit().putString("accessibility_last_action_result", "failed:${e.message}").apply()
-                result = UiActionResult(false, e.message ?: "Governed UI click failed.")
-                latch.countDown()
+            if (postconditionViewId.isNotBlank()) {
+                val postMatches = afterRoot.findAccessibilityNodeInfosByViewId(postconditionViewId)
+                require(postMatches.isNotEmpty()) { "Postcondition view-id not observed." }
             }
-        }
 
-        if (!latch.await(3, TimeUnit.SECONDS)) {
-            return UiActionResult(false, "Timed out waiting for UI postcondition.")
+            if (expectedText != null) {
+                val targetViewId = actionLabel.substringAfter("set_text:")
+                val targetNode = exactlyOneNode(afterRoot, targetViewId)
+                require(targetNode.text?.toString() == expectedText) {
+                    "Text postcondition mismatch; action not proven."
+                }
+            }
+
+            val afterState = stableState(targetPackage, afterRoot)
+            val afterStateHash = sha256(afterState.toString())
+            val receipt = auditSnapshot(targetPackage, null, afterRoot, afterStateHash)
+            val evidenceHash = sha256(receipt.toString())
+
+            prefs.edit()
+                .putString("accessibility_last_snapshot", receipt.toString())
+                .putString("accessibility_last_hash", evidenceHash)
+                .putString("accessibility_last_state_hash", afterStateHash)
+                .putString("accessibility_last_package", targetPackage)
+                .putString("accessibility_last_time", Instant.now().toString())
+                .putString("accessibility_last_action", actionLabel)
+                .putString("accessibility_last_action_result", "succeeded")
+                .apply()
+            UiActionResult(
+                true,
+                "Governed UI action succeeded; postcondition verified; stateHash=$afterStateHash; evidenceHash=$evidenceHash"
+            )
+        } catch (e: Exception) {
+            persistFailure(e)
+            UiActionResult(false, e.message ?: "Postcondition verification failed.")
         }
-        return result
+    }
+
+    private fun persistFailure(e: Exception) {
+        prefs.edit().putString("accessibility_last_action_result", "failed:${e.message}").apply()
+    }
+
+    private fun looksSensitive(node: AccessibilityNodeInfo, viewId: String): Boolean {
+        val haystack = listOf(
+            viewId,
+            node.contentDescription?.toString().orEmpty(),
+            node.hintText?.toString().orEmpty(),
+            node.className?.toString().orEmpty()
+        ).joinToString(" ").lowercase()
+        val sensitive = listOf(
+            "password", "passwort", "pin", "tan", "otp", "one-time", "onetime",
+            "cvv", "cvc", "card number", "kartennummer", "security code", "sicherheitscode",
+            "biometric", "biometr", "seed phrase", "recovery phrase", "private key"
+        )
+        return sensitive.any { it in haystack }
     }
 
     private fun gateOpen(): Boolean =
@@ -197,7 +315,7 @@ class PigaAccessibilityService : AccessibilityService() {
         val nodes = JSONArray()
         collect(root, nodes, depth = 0, budget = intArrayOf(80))
         return JSONObject()
-            .put("schema", "piga.ui.state.v1")
+            .put("schema", "piga.ui.state.v2")
             .put("packageName", packageName)
             .put("nodeCount", nodes.length())
             .put("nodes", nodes)
@@ -211,7 +329,7 @@ class PigaAccessibilityService : AccessibilityService() {
     ): JSONObject {
         val state = stableState(packageName, root)
         return JSONObject()
-            .put("schema", "piga.ui.evidence.v1")
+            .put("schema", "piga.ui.evidence.v2")
             .put("capturedAt", Instant.now().toString())
             .put("packageName", packageName)
             .put("stateHash", stateHash)
@@ -229,17 +347,19 @@ class PigaAccessibilityService : AccessibilityService() {
     ) {
         if (budget[0] <= 0 || depth > 8) return
         budget[0]--
-        out.put(
-            JSONObject()
-                .put("depth", depth)
-                .put("class", node.className?.toString().orEmpty().take(120))
-                .put("viewId", node.viewIdResourceName?.take(180).orEmpty())
-                .put("text", minimize(node.text?.toString()))
-                .put("description", minimize(node.contentDescription?.toString()))
-                .put("clickable", node.isClickable)
-                .put("enabled", node.isEnabled)
-                .put("editable", node.isEditable)
-        )
+        val rawText = node.text?.toString().orEmpty()
+        val item = JSONObject()
+            .put("depth", depth)
+            .put("class", node.className?.toString().orEmpty().take(120))
+            .put("viewId", node.viewIdResourceName?.take(180).orEmpty())
+            .put("text", if (node.isEditable || node.isPassword) "" else minimize(rawText))
+            .put("editableTextHash", if (node.isEditable && !node.isPassword && rawText.isNotEmpty()) sha256(rawText) else "")
+            .put("description", if (node.isPassword) "" else minimize(node.contentDescription?.toString()))
+            .put("clickable", node.isClickable)
+            .put("enabled", node.isEnabled)
+            .put("editable", node.isEditable)
+            .put("password", node.isPassword)
+        out.put(item)
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             collect(child, out, depth + 1, budget)
