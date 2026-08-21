@@ -132,7 +132,8 @@ class BridgeService : Service() {
             "supported_app_launch" to "pocket.app.launch",
             "share_text" to "pocket.share.text",
             "ui_click" to "pocket.ui.click",
-            "ui_set_text" to "pocket.ui.set_text"
+            "ui_set_text" to "pocket.ui.set_text",
+            "ui_sequence" to "pocket.ui.sequence"
         )
 
         if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
@@ -170,7 +171,7 @@ class BridgeService : Service() {
             sendResult(root, deviceId, pairingId, commandId, "rejected", "Notification permission missing.")
             return
         }
-        if ((type == "ui_click" || type == "ui_set_text") && !prefs.getBoolean("accessibility_connected", false)) {
+        if ((type == "ui_click" || type == "ui_set_text" || type == "ui_sequence") && !prefs.getBoolean("accessibility_connected", false)) {
             sendResult(root, deviceId, pairingId, commandId, "rejected", "Accessibility service unavailable.")
             return
         }
@@ -188,6 +189,7 @@ class BridgeService : Service() {
                 "share_text" -> executeShareText(payload)
                 "ui_click" -> executeUiClick(payload)
                 "ui_set_text" -> executeUiSetText(payload)
+                "ui_sequence" -> executeUiSequence(payload)
                 else -> throw IllegalStateException("Unsupported command type")
             }
             sendResult(root, deviceId, pairingId, commandId, "succeeded", detail)
@@ -297,6 +299,17 @@ class BridgeService : Service() {
     private fun executeUiSetText(payload: JSONObject): String {
         val result = PigaAccessibilityService.governedSetText(payload)
         require(result.ok) { result.detail }
+        return result.detail
+    }
+
+    private fun executeUiSequence(payload: JSONObject): String {
+        val result = GovernedUiSequence.execute(payload)
+        require(result.ok) { result.detail }
+        prefs.edit()
+            .putInt("ui_sequence_last_completed_steps", result.completedSteps)
+            .putString("ui_sequence_last_result", result.detail)
+            .putString("ui_sequence_last_time", Instant.now().toString())
+            .apply()
         return result.detail
     }
 
