@@ -140,6 +140,38 @@ class BridgeService : Service() {
             return
         }
 
+        val factoryCorrelation = try {
+            CommandReceiptContract.parseFactoryCorrelation(
+                commandId,
+                payload.optJSONObject("factoryContext")
+            )
+        } catch (e: IllegalArgumentException) {
+            sendResult(
+                root,
+                deviceId,
+                pairingId,
+                commandId,
+                "rejected",
+                e.message ?: "Factory command correlation rejected."
+            )
+            return
+        }
+
+        if (type == "orchestration_plan_verify" && factoryCorrelation != null) {
+            val planSha256 = payload.optString("planSha256").trim().lowercase(Locale.ROOT)
+            if (planSha256 != factoryCorrelation.verifiedPlanHash) {
+                sendResult(
+                    root,
+                    deviceId,
+                    pairingId,
+                    commandId,
+                    "rejected",
+                    "Factory verifiedPlanHash does not match orchestration plan hash."
+                )
+                return
+            }
+        }
+
         val pendingKey = CommandReceiptContract.outboxKey(commandId)
         if (prefs.contains(pendingKey)) {
             // A local terminal effect already exists and is awaiting delivery.
@@ -199,7 +231,10 @@ class BridgeService : Service() {
                 commandNonce = commandNonce,
                 status = "succeeded",
                 detail = detail,
-                createdAtMs = System.currentTimeMillis()
+                createdAtMs = System.currentTimeMillis(),
+                jobId = factoryCorrelation?.jobId,
+                subjobId = factoryCorrelation?.subjobId,
+                verifiedPlanHash = factoryCorrelation?.verifiedPlanHash
             )
         } catch (e: Exception) {
             CommandReceiptContract.PendingResult(
@@ -207,7 +242,10 @@ class BridgeService : Service() {
                 commandNonce = commandNonce,
                 status = "failed",
                 detail = e.message ?: "Local capability failed.",
-                createdAtMs = System.currentTimeMillis()
+                createdAtMs = System.currentTimeMillis(),
+                jobId = factoryCorrelation?.jobId,
+                subjobId = factoryCorrelation?.subjobId,
+                verifiedPlanHash = factoryCorrelation?.verifiedPlanHash
             )
         }
 
@@ -243,7 +281,17 @@ class BridgeService : Service() {
         pairingId: String,
         result: CommandReceiptContract.PendingResult
     ) {
-        sendResultDirect(root, deviceId, pairingId, result.commandId, result.status, result.detail)
+        sendResultDirect(
+            root,
+            deviceId,
+            pairingId,
+            result.commandId,
+            result.status,
+            result.detail,
+            result.jobId,
+            result.subjobId,
+            result.verifiedPlanHash
+        )
         val key = CommandReceiptContract.outboxKey(result.commandId)
         require(prefs.edit().remove(key).commit()) {
             "Result delivered but local outbox cleanup failed."
@@ -370,9 +418,26 @@ class BridgeService : Service() {
         sendResultDirect(root, deviceId, pairingId, commandId, status, detail)
     }
 
-    private fun sendResultDirect(root: String, deviceId: String, pairingId: String, commandId: String, status: String, detail: String) {
-        val safeDetail = JSONObject.quote(detail)
-        val body = "{\"status\":\"$status\",\"detail\":$safeDetail}"
+    private fun sendResultDirect(
+        root: String,
+        deviceId: String,
+        pairingId: String,
+        commandId: String,
+        status: String,
+        detail: String,
+        jobId: String? = null,
+        subjobId: String? = null,
+        verifiedPlanHash: String? = null
+    ) {
+        val bodyJson = JSONObject()
+            .put("status", status)
+            .put("detail", detail)
+            .put("commandId", commandId)
+        if (!jobId.isNullOrBlank()) bodyJson.put("jobId", jobId)
+        if (!subjobId.isNullOrBlank()) bodyJson.put("subjobId", subjobId)
+        if (!verifiedPlanHash.isNullOrBlank()) bodyJson.put("verifiedPlanHash", verifiedPlanHash)
+
+        val body = bodyJson.toString()
         val canonicalPath = CommandReceiptContract.resultPath(deviceId, commandId)
         signedRuntimePost("$root$canonicalPath", canonicalPath, pairingId, body)
     }
