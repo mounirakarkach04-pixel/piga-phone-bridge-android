@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "contractId": "PIGA_PHONE_ORCHESTRATION_V1",
   "controlPlane": {
     "repository": "mounirakarkach04-pixel/piga-pocket-enterprise",
@@ -12,58 +12,34 @@
   "phoneNode": {
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
     "applicationId": "io.piga.phonebridge.mobile",
-    "minimumCompatibleVersionCode": 17,
-    "minimumCompatibleVersionName": "0.1.16",
+    "minimumCompatibleVersionCode": 18,
+    "minimumCompatibleVersionName": "0.1.17",
     "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier",
     "receiptContract": "io.piga.phonebridge.CommandReceiptContract"
   },
   "command": {
-    "type": "orchestration_plan_verify",
-    "capabilityScope": "pocket.orchestration.verify",
-    "payloadRequired": ["plan", "planSha256"],
-    "factoryContextOptionalForLegacy": true,
-    "factoryContextWhenPresentRequired": ["jobId", "subjobId", "verifiedPlanHash", "expectedCommandId"],
+    "factoryContextWhenPresentRequired": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "expectedCommandId"],
     "nonceRequired": true,
     "expiresAtRequired": true,
     "leaseUntilRequired": true
   },
-  "receiptRequired": [
-    "admitted",
-    "reason",
-    "planSha256",
-    "gate2AfterFrontier",
-    "gate2AfterRuntime",
-    "actionAfterGate2",
-    "productionAuthorized",
-    "externalActionExecuted",
-    "source"
-  ],
   "factoryReceiptCorrelation": {
-    "fields": ["jobId", "subjobId", "verifiedPlanHash", "commandId"],
+    "fields": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "commandId"],
     "commandIdMustEqualExpectedCommandId": true,
     "verifiedPlanHashFormat": "sha256-lowerhex",
+    "actionSpecHashFormat": "sha256-lowerhex",
     "ambiguousEffectOutcome": "UNKNOWN",
     "blindRetryAfterPossibleEffect": false
   },
   "invariants": {
     "productionAuthorized": false,
-    "externalActionExecutedByVerification": false,
     "schedulerMayNotGrantAuthority": true,
     "workersAreEphemeral": true,
     "freeOnly": true,
     "gate2RequiredForExternalAction": true,
+    "actionSpecBoundBeforeGate2": true,
     "materialChangeRequiresReentry": true,
     "hashMismatchBlocks": true,
-    "verificationIsEvidenceNotAuthority": true,
-    "automationPlanIsNotActuationAuthority": true,
-    "physicalActuationRequiresGate2AndSafetyInterlock": true,
-    "communicationTransportIsNotActionAuthority": true,
-    "externalMessageSendRequiresGate2": true,
-    "telephonyInitiationRequiresGate2": true,
-    "offlineQueuePreservesNonceExpiryAndScope": true,
-    "symbolicNumerologyIsNotScientificEvidence": true,
-    "scripturalReferenceRequiresProvenanceAndContext": true,
-    "creativeNarrativeIsNotFactEvidence": true,
     "pairedAutonomyPersistsAcrossProcessRestart": true,
     "emergencyStopDominatesAutonomy": true
   }
