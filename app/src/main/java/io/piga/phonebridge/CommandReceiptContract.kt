@@ -18,6 +18,7 @@ object CommandReceiptContract {
         val jobId: String,
         val subjobId: String,
         val verifiedPlanHash: String,
+        val actionSpecHash: String,
         val expectedCommandId: String
     )
 
@@ -48,7 +49,6 @@ object CommandReceiptContract {
     fun decodePendingResult(encoded: String): PendingResult? {
         val parts = splitEscaped(encoded)
         return when (parts.size) {
-            // Legacy v1 outbox format.
             5 -> {
                 val createdAt = parts[3].toLongOrNull() ?: return null
                 PendingResult(
@@ -60,7 +60,6 @@ object CommandReceiptContract {
                 )
             }
 
-            // Factory-correlated v2 outbox format.
             8 -> {
                 val createdAt = parts[3].toLongOrNull() ?: return null
                 PendingResult(
@@ -88,12 +87,16 @@ object CommandReceiptContract {
         val jobId = factoryContext.optString("jobId").trim()
         val subjobId = factoryContext.optString("subjobId").trim()
         val verifiedPlanHash = factoryContext.optString("verifiedPlanHash").trim().lowercase()
+        val actionSpecHash = factoryContext.optString("actionSpecHash").trim().lowercase()
         val expectedCommandId = factoryContext.optString("expectedCommandId").trim()
 
         require(jobId.isNotBlank()) { "Factory jobId missing." }
         require(subjobId.isNotBlank()) { "Factory subjobId missing." }
         require(verifiedPlanHash.matches(Regex("^[0-9a-f]{64}$"))) {
             "Factory verifiedPlanHash invalid."
+        }
+        require(actionSpecHash.matches(Regex("^[0-9a-f]{64}$"))) {
+            "Factory actionSpecHash invalid."
         }
         require(expectedCommandId.isNotBlank()) { "Factory expectedCommandId missing." }
         require(expectedCommandId == commandId) { "Factory command correlation mismatch." }
@@ -102,6 +105,7 @@ object CommandReceiptContract {
             jobId = jobId,
             subjobId = subjobId,
             verifiedPlanHash = verifiedPlanHash,
+            actionSpecHash = actionSpecHash,
             expectedCommandId = expectedCommandId
         )
     }
