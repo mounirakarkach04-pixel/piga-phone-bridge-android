@@ -24,7 +24,7 @@ def main() -> int:
     boot = BOOT.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
 
-    assert contract["controlPlane"]["gearboxVersion"] == "1.5"
+    assert contract["controlPlane"]["gearboxVersion"] == "1.6"
     assert f'versionCode = {contract["phoneNode"]["minimumCompatibleVersionCode"]}' in gradle
     assert f'versionName = "{contract["phoneNode"]["minimumCompatibleVersionName"]}"' in gradle
     assert contract["phoneNode"]["applicationId"] in gradle
@@ -49,6 +49,9 @@ def main() -> int:
     assert inv["externalMessageSendRequiresGate2"] is True
     assert inv["telephonyInitiationRequiresGate2"] is True
     assert inv["offlineQueuePreservesNonceExpiryAndScope"] is True
+    assert inv["symbolicNumerologyIsNotScientificEvidence"] is True
+    assert inv["scripturalReferenceRequiresProvenanceAndContext"] is True
+    assert inv["creativeNarrativeIsNotFactEvidence"] is True
 
     assert "master_autonomy" in recovery
     assert "emergency_stop" in recovery
@@ -60,7 +63,7 @@ def main() -> int:
     assert "RECEIVE_BOOT_COMPLETED" in manifest
     assert ".PigaBridgeApp" in manifest
 
-    print("PIGA phone/control-plane/telecom/autonomy synchronization: PASS")
+    print("PIGA phone/control-plane synchronization v1.6: PASS")
     return 0
 
 
