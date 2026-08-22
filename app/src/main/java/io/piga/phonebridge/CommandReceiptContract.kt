@@ -2,8 +2,10 @@ package io.piga.phonebridge
 
 /**
  * Pure contract helpers for the command ACK/result lifecycle.
- * Keeping endpoint construction outside Android/service code makes the
- * signed canonical path deterministic and directly unit-testable.
+ *
+ * Factory correlation is carried end-to-end when present, while decode remains
+ * compatible with the older five-field pending-result format so an app update
+ * cannot strand an existing local outbox entry.
  */
 object CommandReceiptContract {
     fun ackPath(deviceId: String, commandId: String): String =
@@ -12,12 +14,22 @@ object CommandReceiptContract {
     fun resultPath(deviceId: String, commandId: String): String =
         "/api/bridge/devices/$deviceId/commands/$commandId/result"
 
+    data class FactoryCorrelation(
+        val jobId: String,
+        val subjobId: String,
+        val verifiedPlanHash: String,
+        val expectedCommandId: String
+    )
+
     data class PendingResult(
         val commandId: String,
         val commandNonce: String,
         val status: String,
         val detail: String,
-        val createdAtMs: Long
+        val createdAtMs: Long,
+        val jobId: String? = null,
+        val subjobId: String? = null,
+        val verifiedPlanHash: String? = null
     )
 
     fun outboxKey(commandId: String): String = "pending_command_result_$commandId"
@@ -27,19 +39,70 @@ object CommandReceiptContract {
         result.commandNonce,
         result.status,
         result.createdAtMs.toString(),
+        result.jobId.orEmpty(),
+        result.subjobId.orEmpty(),
+        result.verifiedPlanHash.orEmpty(),
         result.detail
     ).joinToString("\n") { escape(it) }
 
     fun decodePendingResult(encoded: String): PendingResult? {
         val parts = splitEscaped(encoded)
-        if (parts.size != 5) return null
-        val createdAt = parts[3].toLongOrNull() ?: return null
-        return PendingResult(
-            commandId = parts[0],
-            commandNonce = parts[1],
-            status = parts[2],
-            createdAtMs = createdAt,
-            detail = parts[4]
+        return when (parts.size) {
+            // Legacy v1 outbox format.
+            5 -> {
+                val createdAt = parts[3].toLongOrNull() ?: return null
+                PendingResult(
+                    commandId = parts[0],
+                    commandNonce = parts[1],
+                    status = parts[2],
+                    createdAtMs = createdAt,
+                    detail = parts[4]
+                )
+            }
+
+            // Factory-correlated v2 outbox format.
+            8 -> {
+                val createdAt = parts[3].toLongOrNull() ?: return null
+                PendingResult(
+                    commandId = parts[0],
+                    commandNonce = parts[1],
+                    status = parts[2],
+                    createdAtMs = createdAt,
+                    jobId = parts[4].ifBlank { null },
+                    subjobId = parts[5].ifBlank { null },
+                    verifiedPlanHash = parts[6].ifBlank { null },
+                    detail = parts[7]
+                )
+            }
+
+            else -> null
+        }
+    }
+
+    fun parseFactoryCorrelation(
+        commandId: String,
+        factoryContext: org.json.JSONObject?
+    ): FactoryCorrelation? {
+        if (factoryContext == null) return null
+
+        val jobId = factoryContext.optString("jobId").trim()
+        val subjobId = factoryContext.optString("subjobId").trim()
+        val verifiedPlanHash = factoryContext.optString("verifiedPlanHash").trim().lowercase()
+        val expectedCommandId = factoryContext.optString("expectedCommandId").trim()
+
+        require(jobId.isNotBlank()) { "Factory jobId missing." }
+        require(subjobId.isNotBlank()) { "Factory subjobId missing." }
+        require(verifiedPlanHash.matches(Regex("^[0-9a-f]{64}$"))) {
+            "Factory verifiedPlanHash invalid."
+        }
+        require(expectedCommandId.isNotBlank()) { "Factory expectedCommandId missing." }
+        require(expectedCommandId == commandId) { "Factory command correlation mismatch." }
+
+        return FactoryCorrelation(
+            jobId = jobId,
+            subjobId = subjobId,
+            verifiedPlanHash = verifiedPlanHash,
+            expectedCommandId = expectedCommandId
         )
     }
 
