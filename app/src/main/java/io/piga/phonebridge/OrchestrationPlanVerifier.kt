@@ -6,6 +6,8 @@ import java.security.MessageDigest
 
 object OrchestrationPlanVerifier {
     private const val VERIFIER_VERSION = "0.1.15-diagnostic"
+    private const val PRODUCTION_AUTHORITY_FORBIDDEN = "production_authority_forbidden"
+    private const val SCHEDULER_AUTHORITY_INVARIANT_MISSING = "scheduler_authority_invariant_missing"
 
     data class Result(
         val admitted: Boolean,
@@ -21,9 +23,11 @@ object OrchestrationPlanVerifier {
         val canonical = canonicalJson(plan)
         val hash = sha256(canonical)
 
-        // One-build diagnostic: fail closed while exposing the locally computed
-        // canonical hash and verifier version through the already signed result detail.
-        throw IllegalStateException("PIGA_HASH_DIAGNOSTIC actualSha256=$hash verifierVersion=$VERIFIER_VERSION canonicalLength=${canonical.toByteArray(Charsets.UTF_8).size}")
+        // Keep the diagnostic build strictly fail-closed. The explicit invariant
+        // identifiers are retained for cross-plane synchronization checks and
+        // must never be interpreted as production authority.
+        val invariantMarker = "$PRODUCTION_AUTHORITY_FORBIDDEN:$SCHEDULER_AUTHORITY_INVARIANT_MISSING"
+        throw IllegalStateException("PIGA_HASH_DIAGNOSTIC actualSha256=$hash verifierVersion=$VERIFIER_VERSION canonicalLength=${canonical.toByteArray(Charsets.UTF_8).size} invariant=$invariantMarker")
     }
 
     fun receiptJson(result: Result): JSONObject = JSONObject().apply {
