@@ -11,8 +11,8 @@ android {
         applicationId = "io.piga.phonebridge.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.1.12"
+        versionCode = 14
+        versionName = "0.1.13"
     }
 
     compileOptions {
