@@ -3,7 +3,7 @@
   "contractId": "PIGA_PHONE_ORCHESTRATION_V1",
   "controlPlane": {
     "repository": "mounirakarkach04-pixel/piga-pocket-enterprise",
-    "gearboxVersion": "1.3",
+    "gearboxVersion": "1.4",
     "planner": "OR-Tools CP-SAT",
     "canonicalEntrypoint": "factory/orchestration/run_local.py"
   },
@@ -39,6 +39,8 @@
     "gate2RequiredForExternalAction": true,
     "materialChangeRequiresReentry": true,
     "hashMismatchBlocks": true,
-    "verificationIsEvidenceNotAuthority": true
+    "verificationIsEvidenceNotAuthority": true,
+    "automationPlanIsNotActuationAuthority": true,
+    "physicalActuationRequiresGate2AndSafetyInterlock": true
   }
 }
