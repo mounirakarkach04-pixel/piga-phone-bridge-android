@@ -11,6 +11,7 @@ VERIFIER = ROOT / "app/src/main/java/io/piga/phonebridge/OrchestrationPlanVerifi
 RECOVERY = ROOT / "app/src/main/java/io/piga/phonebridge/BridgeRecoveryWorker.kt"
 SCHEDULER = ROOT / "app/src/main/java/io/piga/phonebridge/BridgeRecoveryScheduler.kt"
 BOOT = ROOT / "app/src/main/java/io/piga/phonebridge/BootReceiver.kt"
+APP = ROOT / "app/src/main/java/io/piga/phonebridge/PigaBridgeApp.kt"
 MANIFEST = ROOT / "app/src/main/AndroidManifest.xml"
 
 
@@ -22,6 +23,7 @@ def main() -> int:
     recovery = RECOVERY.read_text(encoding="utf-8")
     scheduler = SCHEDULER.read_text(encoding="utf-8")
     boot = BOOT.read_text(encoding="utf-8")
+    app = APP.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
 
     assert contract["controlPlane"]["gearboxVersion"] == "1.6"
@@ -52,6 +54,8 @@ def main() -> int:
     assert inv["symbolicNumerologyIsNotScientificEvidence"] is True
     assert inv["scripturalReferenceRequiresProvenanceAndContext"] is True
     assert inv["creativeNarrativeIsNotFactEvidence"] is True
+    assert inv["pairedAutonomyPersistsAcrossProcessRestart"] is True
+    assert inv["emergencyStopDominatesAutonomy"] is True
 
     assert "master_autonomy" in recovery
     assert "emergency_stop" in recovery
@@ -60,10 +64,13 @@ def main() -> int:
     assert "15, TimeUnit.MINUTES" in scheduler
     assert "ACTION_BOOT_COMPLETED" in boot
     assert "ACTION_MY_PACKAGE_REPLACED" in boot
+    assert 'putBoolean("master_autonomy", true)' in app
+    assert 'getBoolean("emergency_stop", false)' in app
+    assert "BridgeRecoveryScheduler.requestRecovery(this)" in app
     assert "RECEIVE_BOOT_COMPLETED" in manifest
     assert ".PigaBridgeApp" in manifest
 
-    print("PIGA phone/control-plane synchronization v1.6: PASS")
+    print("PIGA phone/control-plane persistent-autonomy synchronization v1.6: PASS")
     return 0
 
 
