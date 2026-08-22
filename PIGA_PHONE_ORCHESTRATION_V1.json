@@ -3,7 +3,7 @@
   "contractId": "PIGA_PHONE_ORCHESTRATION_V1",
   "controlPlane": {
     "repository": "mounirakarkach04-pixel/piga-pocket-enterprise",
-    "gearboxVersion": "1.5",
+    "gearboxVersion": "1.6",
     "planner": "OR-Tools CP-SAT",
     "canonicalEntrypoint": "factory/orchestration/run_local.py"
   },
@@ -45,6 +45,9 @@
     "communicationTransportIsNotActionAuthority": true,
     "externalMessageSendRequiresGate2": true,
     "telephonyInitiationRequiresGate2": true,
-    "offlineQueuePreservesNonceExpiryAndScope": true
+    "offlineQueuePreservesNonceExpiryAndScope": true,
+    "symbolicNumerologyIsNotScientificEvidence": true,
+    "scripturalReferenceRequiresProvenanceAndContext": true,
+    "creativeNarrativeIsNotFactEvidence": true
   }
 }
