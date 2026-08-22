@@ -18,11 +18,26 @@
     "receiptContract": "io.piga.phonebridge.CommandReceiptContract"
   },
   "command": {
+    "type": "orchestration_plan_verify",
+    "capabilityScope": "pocket.orchestration.verify",
+    "payloadRequired": ["plan", "planSha256"],
+    "factoryContextOptionalForLegacy": true,
     "factoryContextWhenPresentRequired": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "expectedCommandId"],
     "nonceRequired": true,
     "expiresAtRequired": true,
     "leaseUntilRequired": true
   },
+  "receiptRequired": [
+    "admitted",
+    "reason",
+    "planSha256",
+    "gate2AfterFrontier",
+    "gate2AfterRuntime",
+    "actionAfterGate2",
+    "productionAuthorized",
+    "externalActionExecuted",
+    "source"
+  ],
   "factoryReceiptCorrelation": {
     "fields": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "commandId"],
     "commandIdMustEqualExpectedCommandId": true,
@@ -33,6 +48,7 @@
   },
   "invariants": {
     "productionAuthorized": false,
+    "externalActionExecutedByVerification": false,
     "schedulerMayNotGrantAuthority": true,
     "workersAreEphemeral": true,
     "freeOnly": true,
@@ -40,6 +56,16 @@
     "actionSpecBoundBeforeGate2": true,
     "materialChangeRequiresReentry": true,
     "hashMismatchBlocks": true,
+    "verificationIsEvidenceNotAuthority": true,
+    "automationPlanIsNotActuationAuthority": true,
+    "physicalActuationRequiresGate2AndSafetyInterlock": true,
+    "communicationTransportIsNotActionAuthority": true,
+    "externalMessageSendRequiresGate2": true,
+    "telephonyInitiationRequiresGate2": true,
+    "offlineQueuePreservesNonceExpiryAndScope": true,
+    "symbolicNumerologyIsNotScientificEvidence": true,
+    "scripturalReferenceRequiresProvenanceAndContext": true,
+    "creativeNarrativeIsNotFactEvidence": true,
     "pairedAutonomyPersistsAcrossProcessRestart": true,
     "emergencyStopDominatesAutonomy": true
   }
