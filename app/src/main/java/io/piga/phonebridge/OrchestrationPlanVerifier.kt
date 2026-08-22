@@ -1,5 +1,6 @@
 package io.piga.phonebridge
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
 
@@ -15,7 +16,7 @@ object OrchestrationPlanVerifier {
     )
 
     fun verify(plan: JSONObject): Result {
-        val canonical = plan.toString()
+        val canonical = canonicalJson(plan)
         val hash = sha256(canonical)
         val invariants = plan.optJSONObject("invariants")
             ?: return Result(false, "missing_invariants", hash, false, false)
@@ -75,6 +76,20 @@ object OrchestrationPlanVerifier {
         put("productionAuthorized", false)
         put("externalActionExecuted", false)
         put("source", "phone.orchestration-plan-verifier")
+    }
+
+    private fun canonicalJson(value: Any?): String = when (value) {
+        null, JSONObject.NULL -> "null"
+        is JSONObject -> value.keys().asSequence().toList().sorted().joinToString(",", "{", "}") { key ->
+            "${JSONObject.quote(key)}:${canonicalJson(value.opt(key))}"
+        }
+        is JSONArray -> (0 until value.length()).joinToString(",", "[", "]") { index ->
+            canonicalJson(value.opt(index))
+        }
+        is String -> JSONObject.quote(value)
+        is Boolean -> if (value) "true" else "false"
+        is Number -> value.toString()
+        else -> JSONObject.quote(value.toString())
     }
 
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
