@@ -3,7 +3,7 @@
   "contractId": "PIGA_PHONE_ORCHESTRATION_V1",
   "controlPlane": {
     "repository": "mounirakarkach04-pixel/piga-pocket-enterprise",
-    "gearboxVersion": "1.0",
+    "gearboxVersion": "1.1",
     "planner": "OR-Tools CP-SAT",
     "canonicalEntrypoint": "factory/orchestration/run_local.py"
   },
