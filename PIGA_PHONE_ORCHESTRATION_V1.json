@@ -10,14 +10,14 @@
   "phoneNode": {
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
     "applicationId": "io.piga.phonebridge.mobile",
-    "minimumCompatibleVersionCode": 14,
-    "minimumCompatibleVersionName": "0.1.13",
+    "minimumCompatibleVersionCode": 15,
+    "minimumCompatibleVersionName": "0.1.14",
     "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier"
   },
   "command": {
     "type": "orchestration_plan_verify",
     "capabilityScope": "pocket.orchestration.verify",
-    "payloadRequired": ["plan", "expectedPlanSha256"],
+    "payloadRequired": ["plan", "planSha256"],
     "nonceRequired": true,
     "expiresAtRequired": true,
     "leaseUntilRequired": true
