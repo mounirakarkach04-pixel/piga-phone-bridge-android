@@ -128,6 +128,7 @@ class PairingActivity : Activity() {
                     .put("pocket.tts")
                     .put("pocket.app.launch")
                     .put("pocket.share.text")
+                    .put("pocket.orchestration.verify")
                 val body = JSONObject()
                     .put("deviceId", ensureDeviceId())
                     .put("publicKey", getPublicKeyBase64())
