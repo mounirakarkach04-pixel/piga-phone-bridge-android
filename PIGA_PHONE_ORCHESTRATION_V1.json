@@ -10,8 +10,8 @@
   "phoneNode": {
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
     "applicationId": "io.piga.phonebridge.mobile",
-    "minimumCompatibleVersionCode": 13,
-    "minimumCompatibleVersionName": "0.1.12",
+    "minimumCompatibleVersionCode": 14,
+    "minimumCompatibleVersionName": "0.1.13",
     "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier"
   },
   "command": {
@@ -22,16 +22,7 @@
     "expiresAtRequired": true,
     "leaseUntilRequired": true
   },
-  "receiptRequired": [
-    "admitted",
-    "reason",
-    "planSha256",
-    "gate2AfterFrontier",
-    "gate2AfterRuntime",
-    "productionAuthorized",
-    "externalActionExecuted",
-    "source"
-  ],
+  "receiptRequired": ["admitted","reason","planSha256","gate2AfterFrontier","gate2AfterRuntime","productionAuthorized","externalActionExecuted","source"],
   "invariants": {
     "productionAuthorized": false,
     "externalActionExecutedByVerification": false,
@@ -48,6 +39,8 @@
     "offlineQueuePreservesNonceExpiryAndScope": true,
     "symbolicNumerologyIsNotScientificEvidence": true,
     "scripturalReferenceRequiresProvenanceAndContext": true,
-    "creativeNarrativeIsNotFactEvidence": true
+    "creativeNarrativeIsNotFactEvidence": true,
+    "pairedAutonomyPersistsAcrossProcessRestart": true,
+    "emergencyStopDominatesAutonomy": true
   }
 }
