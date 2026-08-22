@@ -3,15 +3,15 @@
   "contractId": "PIGA_PHONE_ORCHESTRATION_V1",
   "controlPlane": {
     "repository": "mounirakarkach04-pixel/piga-pocket-enterprise",
-    "gearboxVersion": "1.4",
+    "gearboxVersion": "1.5",
     "planner": "OR-Tools CP-SAT",
     "canonicalEntrypoint": "factory/orchestration/run_local.py"
   },
   "phoneNode": {
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
     "applicationId": "io.piga.phonebridge.mobile",
-    "minimumCompatibleVersionCode": 12,
-    "minimumCompatibleVersionName": "0.1.11",
+    "minimumCompatibleVersionCode": 13,
+    "minimumCompatibleVersionName": "0.1.12",
     "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier"
   },
   "command": {
@@ -41,6 +41,10 @@
     "hashMismatchBlocks": true,
     "verificationIsEvidenceNotAuthority": true,
     "automationPlanIsNotActuationAuthority": true,
-    "physicalActuationRequiresGate2AndSafetyInterlock": true
+    "physicalActuationRequiresGate2AndSafetyInterlock": true,
+    "communicationTransportIsNotActionAuthority": true,
+    "externalMessageSendRequiresGate2": true,
+    "telephonyInitiationRequiresGate2": true,
+    "offlineQueuePreservesNonceExpiryAndScope": true
   }
 }
