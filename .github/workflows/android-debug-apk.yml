@@ -35,6 +35,9 @@ jobs:
           gradle-version: '8.9'
           cache-read-only: false
 
+      - name: JVM unit tests
+        run: gradle :app:testDebugUnitTest --build-cache --parallel --stacktrace
+
       - name: Android lint
         run: gradle :app:lintDebug --build-cache --parallel --stacktrace
 
