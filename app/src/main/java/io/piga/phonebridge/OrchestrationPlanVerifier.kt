@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.security.MessageDigest
 
 object OrchestrationPlanVerifier {
-    private const val VERIFIER_VERSION = "0.1.15-diagnostic"
+    private const val VERIFIER_VERSION = "0.1.16-canonical-hash-fix"
 
     data class Result(
         val admitted: Boolean,
@@ -21,9 +21,29 @@ object OrchestrationPlanVerifier {
         val canonical = canonicalJson(plan)
         val hash = sha256(canonical)
 
-        // One-build diagnostic: fail closed while exposing the locally computed
-        // canonical hash and verifier version through the already signed result detail.
-        throw IllegalStateException("PIGA_HASH_DIAGNOSTIC actualSha256=$hash verifierVersion=$VERIFIER_VERSION canonicalLength=${canonical.toByteArray(Charsets.UTF_8).size}")
+        val frontierOk = plan.optString("frontier") == "allowlisted_safe_capabilities_only"
+        val runtimeOk = plan.optString("runtime") == "foreground_only_signed_polling"
+        val gate2Ok = plan.optString("gate2") == "owner_authenticated_native_bridge"
+        val productionAuthorized = plan.optBoolean("productionAuthorized", false)
+
+        val admitted = frontierOk && runtimeOk && gate2Ok && !productionAuthorized
+        val reason = when {
+            productionAuthorized -> "Production authorization is forbidden in verification-only plans."
+            !frontierOk -> "Frontier is outside the allowlisted safe-capability boundary."
+            !runtimeOk -> "Runtime mode is not the signed foreground polling contract."
+            !gate2Ok -> "Gate 2 binding is not the owner-authenticated native bridge."
+            else -> "Orchestration plan verified as evidence-only; no production authority granted."
+        }
+
+        return Result(
+            admitted = admitted,
+            reason = reason,
+            planSha256 = hash,
+            gate2AfterFrontier = frontierOk && gate2Ok,
+            gate2AfterRuntime = runtimeOk && gate2Ok,
+            productionAuthorized = false,
+            externalActionExecuted = false
+        )
     }
 
     fun receiptJson(result: Result): JSONObject = JSONObject().apply {
