@@ -6,6 +6,8 @@ import java.security.MessageDigest
 
 object OrchestrationPlanVerifier {
     private const val VERIFIER_VERSION = "0.1.16-canonical-hash-fix"
+    private const val PRODUCTION_AUTHORITY_FORBIDDEN = "production_authority_forbidden"
+    private const val SCHEDULER_AUTHORITY_INVARIANT_MISSING = "scheduler_authority_invariant_missing"
 
     data class Result(
         val admitted: Boolean,
@@ -28,11 +30,11 @@ object OrchestrationPlanVerifier {
 
         val admitted = frontierOk && runtimeOk && gate2Ok && !productionAuthorized
         val reason = when {
-            productionAuthorized -> "Production authorization is forbidden in verification-only plans."
-            !frontierOk -> "Frontier is outside the allowlisted safe-capability boundary."
-            !runtimeOk -> "Runtime mode is not the signed foreground polling contract."
-            !gate2Ok -> "Gate 2 binding is not the owner-authenticated native bridge."
-            else -> "Orchestration plan verified as evidence-only; no production authority granted."
+            productionAuthorized -> PRODUCTION_AUTHORITY_FORBIDDEN
+            !frontierOk -> "frontier_outside_allowlisted_safe_capability_boundary"
+            !runtimeOk -> SCHEDULER_AUTHORITY_INVARIANT_MISSING
+            !gate2Ok -> "gate2_owner_authenticated_native_bridge_required"
+            else -> "orchestration_plan_verified_evidence_only"
         }
 
         return Result(
