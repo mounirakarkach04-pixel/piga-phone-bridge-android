@@ -74,6 +74,7 @@ class BridgeService : Service() {
                     ?: throw IllegalStateException("Missing pairing id")
 
                 syncSafety(root, deviceId, pairingId)
+                retryPendingResults(root, deviceId, pairingId)
 
                 val canonicalPath = "/api/bridge/devices/$deviceId/commands"
                 val response = signedRuntimeGet("$root$canonicalPath", canonicalPath, pairingId)
@@ -139,6 +140,13 @@ class BridgeService : Service() {
             return
         }
 
+        val pendingKey = CommandReceiptContract.outboxKey(commandId)
+        if (prefs.contains(pendingKey)) {
+            // A local terminal effect already exists and is awaiting delivery.
+            // Never re-run it or overwrite it with a replay rejection.
+            return
+        }
+
         if (prefs.getBoolean("command_nonce_$commandNonce", false)) {
             sendResult(root, deviceId, pairingId, commandId, "rejected", "Command nonce replay rejected.")
             return
@@ -171,9 +179,11 @@ class BridgeService : Service() {
         }
 
         sendAck(root, deviceId, pairingId, commandId, "accepted")
-        prefs.edit().putBoolean("command_nonce_$commandNonce", true).apply()
+        require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {
+            "Unable to persist command nonce before execution."
+        }
 
-        try {
+        val outcome = try {
             val detail = when (type) {
                 "local_notification" -> executeNotification(commandId, payload)
                 "clipboard_write" -> executeClipboard(payload)
@@ -184,9 +194,59 @@ class BridgeService : Service() {
                 "orchestration_plan_verify" -> executeOrchestrationPlanVerify(payload)
                 else -> throw IllegalStateException("Unsupported command type")
             }
-            sendResult(root, deviceId, pairingId, commandId, "succeeded", detail)
+            CommandReceiptContract.PendingResult(
+                commandId = commandId,
+                commandNonce = commandNonce,
+                status = "succeeded",
+                detail = detail,
+                createdAtMs = System.currentTimeMillis()
+            )
         } catch (e: Exception) {
-            sendResult(root, deviceId, pairingId, commandId, "failed", e.message ?: "Local capability failed.")
+            CommandReceiptContract.PendingResult(
+                commandId = commandId,
+                commandNonce = commandNonce,
+                status = "failed",
+                detail = e.message ?: "Local capability failed.",
+                createdAtMs = System.currentTimeMillis()
+            )
+        }
+
+        persistPendingResult(outcome)
+        deliverPendingResult(root, deviceId, pairingId, outcome)
+    }
+
+    private fun persistPendingResult(result: CommandReceiptContract.PendingResult) {
+        val key = CommandReceiptContract.outboxKey(result.commandId)
+        val encoded = CommandReceiptContract.encodePendingResult(result)
+        require(prefs.edit().putString(key, encoded).commit()) {
+            "Unable to persist terminal command result."
+        }
+    }
+
+    private fun retryPendingResults(root: String, deviceId: String, pairingId: String) {
+        val pending = prefs.all.entries
+            .filter { it.key.startsWith("pending_command_result_") }
+            .sortedBy { it.key }
+
+        for ((key, raw) in pending) {
+            val encoded = raw as? String
+                ?: throw IllegalStateException("Pending result outbox entry invalid: $key")
+            val result = CommandReceiptContract.decodePendingResult(encoded)
+                ?: throw IllegalStateException("Pending result outbox decode failed: $key")
+            deliverPendingResult(root, deviceId, pairingId, result)
+        }
+    }
+
+    private fun deliverPendingResult(
+        root: String,
+        deviceId: String,
+        pairingId: String,
+        result: CommandReceiptContract.PendingResult
+    ) {
+        sendResultDirect(root, deviceId, pairingId, result.commandId, result.status, result.detail)
+        val key = CommandReceiptContract.outboxKey(result.commandId)
+        require(prefs.edit().remove(key).commit()) {
+            "Result delivered but local outbox cleanup failed."
         }
     }
 
@@ -302,17 +362,19 @@ class BridgeService : Service() {
 
     private fun sendAck(root: String, deviceId: String, pairingId: String, commandId: String, status: String) {
         val body = "{\"status\":\"$status\"}"
-        val canonicalPath = "/api/bridge/devices/$deviceId/commands/$commandId"
-        val url = "$root/api/bridge/devices/$deviceId/commands/$commandId/ack"
-        signedRuntimePost(url, canonicalPath, pairingId, body)
+        val canonicalPath = CommandReceiptContract.ackPath(deviceId, commandId)
+        signedRuntimePost("$root$canonicalPath", canonicalPath, pairingId, body)
     }
 
     private fun sendResult(root: String, deviceId: String, pairingId: String, commandId: String, status: String, detail: String) {
+        sendResultDirect(root, deviceId, pairingId, commandId, status, detail)
+    }
+
+    private fun sendResultDirect(root: String, deviceId: String, pairingId: String, commandId: String, status: String, detail: String) {
         val safeDetail = JSONObject.quote(detail)
         val body = "{\"status\":\"$status\",\"detail\":$safeDetail}"
-        val canonicalPath = "/api/bridge/devices/$deviceId/commands/$commandId"
-        val url = "$root/api/bridge/devices/$deviceId/commands/$commandId/result"
-        signedRuntimePost(url, canonicalPath, pairingId, body)
+        val canonicalPath = CommandReceiptContract.resultPath(deviceId, commandId)
+        signedRuntimePost("$root$canonicalPath", canonicalPath, pairingId, body)
     }
 
     private fun signedRuntimeGet(url: String, canonicalPath: String, pairingId: String): JSONObject {
