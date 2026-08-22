@@ -130,7 +130,8 @@ class BridgeService : Service() {
             "url_intent" to "pocket.intent.url",
             "text_to_speech" to "pocket.tts",
             "supported_app_launch" to "pocket.app.launch",
-            "share_text" to "pocket.share.text"
+            "share_text" to "pocket.share.text",
+            "orchestration_plan_verify" to "pocket.orchestration.verify"
         )
 
         if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
@@ -180,6 +181,7 @@ class BridgeService : Service() {
                 "text_to_speech" -> executeTextToSpeech(payload)
                 "supported_app_launch" -> executeAppLaunch(payload)
                 "share_text" -> executeShareText(payload)
+                "orchestration_plan_verify" -> executeOrchestrationPlanVerify(payload)
                 else -> throw IllegalStateException("Unsupported command type")
             }
             sendResult(root, deviceId, pairingId, commandId, "succeeded", detail)
@@ -278,6 +280,24 @@ class BridgeService : Service() {
         require(send.resolveActivity(packageManager) != null) { "No admitted share target available." }
         startActivity(send)
         return if (targetPackage.isBlank()) "Share-Intent geöffnet." else "Share-Intent an Ziel-App geöffnet."
+    }
+
+    private fun executeOrchestrationPlanVerify(payload: JSONObject): String {
+        val plan = payload.optJSONObject("plan")
+            ?: throw IllegalArgumentException("Orchestration plan missing.")
+        val expectedSha256 = payload.optString("planSha256").trim().lowercase(Locale.ROOT)
+        require(expectedSha256.matches(Regex("^[0-9a-f]{64}$"))) { "Expected plan SHA-256 missing or invalid." }
+
+        val result = OrchestrationPlanVerifier.verify(plan)
+        require(result.planSha256 == expectedSha256) { "Orchestration plan SHA-256 mismatch." }
+        require(result.admitted) { "Orchestration plan blocked: ${result.reason}" }
+
+        val receipt = OrchestrationPlanVerifier.receiptJson(result).apply {
+            put("expectedPlanSha256", expectedSha256)
+            put("hashMatched", true)
+            put("capabilityScope", "pocket.orchestration.verify")
+        }
+        return receipt.toString()
     }
 
     private fun sendAck(root: String, deviceId: String, pairingId: String, commandId: String, status: String) {
