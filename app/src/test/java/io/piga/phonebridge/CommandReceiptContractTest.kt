@@ -37,11 +37,9 @@ class CommandReceiptContractTest {
             subjobId = "subjob-1",
             verifiedPlanHash = "a".repeat(64)
         )
-
         val restored = CommandReceiptContract.decodePendingResult(
             CommandReceiptContract.encodePendingResult(original)
         )
-
         assertNotNull(restored)
         assertEquals(original, restored)
     }
@@ -51,7 +49,6 @@ class CommandReceiptContractTest {
         val restored = CommandReceiptContract.decodePendingResult(
             "command-9\nnonce-7\nsucceeded\n123456789\nlegacy detail"
         )
-
         assertNotNull(restored)
         requireNotNull(restored)
         assertEquals("command-9", restored.commandId)
@@ -61,11 +58,12 @@ class CommandReceiptContractTest {
     }
 
     @Test
-    fun factoryCorrelationRequiresExactCommandAndHash() {
+    fun factoryCorrelationRequiresCommandPlanAndActionSpecHashes() {
         val context = JSONObject()
             .put("jobId", "job-1")
             .put("subjobId", "subjob-1")
             .put("verifiedPlanHash", "b".repeat(64))
+            .put("actionSpecHash", "c".repeat(64))
             .put("expectedCommandId", "piga-123")
 
         val parsed = CommandReceiptContract.parseFactoryCorrelation("piga-123", context)
@@ -74,9 +72,15 @@ class CommandReceiptContractTest {
         assertEquals("job-1", parsed.jobId)
         assertEquals("subjob-1", parsed.subjobId)
         assertTrue(parsed.verifiedPlanHash.matches(Regex("^[0-9a-f]{64}$")))
+        assertTrue(parsed.actionSpecHash.matches(Regex("^[0-9a-f]{64}$")))
 
         assertThrows(IllegalArgumentException::class.java) {
             CommandReceiptContract.parseFactoryCorrelation("wrong-command", context)
+        }
+
+        val missingActionHash = JSONObject(context.toString()).apply { remove("actionSpecHash") }
+        assertThrows(IllegalArgumentException::class.java) {
+            CommandReceiptContract.parseFactoryCorrelation("piga-123", missingActionHash)
         }
     }
 }
