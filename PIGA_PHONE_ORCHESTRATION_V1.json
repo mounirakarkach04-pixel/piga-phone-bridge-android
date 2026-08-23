@@ -1,33 +1,59 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "contractId": "PIGA_PHONE_ORCHESTRATION_V1",
   "controlPlane": {
     "repository": "mounirakarkach04-pixel/piga-pocket-enterprise",
     "gearboxVersion": "1.6",
     "planner": "OR-Tools CP-SAT",
-    "canonicalEntrypoint": "factory/orchestration/run_local.py"
+    "factoryRuntime": "factory/orchestration/factory_core.py",
+    "factoryBridge": "factory/orchestration/gearbox_factory_bridge.py",
+    "executorAdapter": "factory/orchestration/executor_adapter.py"
   },
   "phoneNode": {
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
     "applicationId": "io.piga.phonebridge.mobile",
-    "minimumCompatibleVersionCode": 16,
-    "minimumCompatibleVersionName": "0.1.15",
-    "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier"
+    "minimumCompatibleVersionCode": 18,
+    "minimumCompatibleVersionName": "0.1.17",
+    "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier",
+    "receiptContract": "io.piga.phonebridge.CommandReceiptContract"
   },
   "command": {
     "type": "orchestration_plan_verify",
     "capabilityScope": "pocket.orchestration.verify",
     "payloadRequired": ["plan", "planSha256"],
+    "factoryContextOptionalForLegacy": true,
+    "factoryContextWhenPresentRequired": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "expectedCommandId"],
     "nonceRequired": true,
     "expiresAtRequired": true,
     "leaseUntilRequired": true
   },
-  "receiptRequired": ["admitted","reason","planSha256","gate2AfterFrontier","gate2AfterRuntime","productionAuthorized","externalActionExecuted","source"],
+  "receiptRequired": [
+    "admitted",
+    "reason",
+    "planSha256",
+    "gate2AfterFrontier",
+    "gate2AfterRuntime",
+    "actionAfterGate2",
+    "productionAuthorized",
+    "externalActionExecuted",
+    "source"
+  ],
+  "factoryReceiptCorrelation": {
+    "fields": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "commandId"],
+    "commandIdMustEqualExpectedCommandId": true,
+    "verifiedPlanHashFormat": "sha256-lowerhex",
+    "actionSpecHashFormat": "sha256-lowerhex",
+    "ambiguousEffectOutcome": "UNKNOWN",
+    "blindRetryAfterPossibleEffect": false
+  },
   "invariants": {
     "productionAuthorized": false,
     "externalActionExecutedByVerification": false,
     "schedulerMayNotGrantAuthority": true,
+    "workersAreEphemeral": true,
+    "freeOnly": true,
     "gate2RequiredForExternalAction": true,
+    "actionSpecBoundBeforeGate2": true,
     "materialChangeRequiresReentry": true,
     "hashMismatchBlocks": true,
     "verificationIsEvidenceNotAuthority": true,

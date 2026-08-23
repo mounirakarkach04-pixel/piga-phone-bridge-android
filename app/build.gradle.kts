@@ -11,8 +11,8 @@ android {
         applicationId = "io.piga.phonebridge.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.1.15"
+        versionCode = 18
+        versionName = "0.1.17"
     }
 
     compileOptions {
@@ -28,4 +28,5 @@ android {
 dependencies {
     implementation("androidx.work:work-runtime-ktx:2.11.2")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
