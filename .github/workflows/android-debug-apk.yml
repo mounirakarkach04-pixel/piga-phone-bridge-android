@@ -23,6 +23,22 @@ jobs:
       - name: Verify PIGA cross-plane synchronization
         run: python scripts/check_piga_sync.py
 
+      - name: Bind APK to Pocket Enterprise control plane
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/io/piga/phonebridge/PairingActivity.kt')
+          s = p.read_text()
+          old = 'https://d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev'
+          new = 'https://ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev'
+          if old not in s:
+              raise SystemExit('Expected legacy control-plane URL not found; fail closed')
+          s = s.replace(old, new)
+          s = s.replace('setText(prefs.getString("base_url", defaultBaseUrl) ?: defaultBaseUrl)', 'setText(defaultBaseUrl)')
+          p.write_text(s)
+          print('Pocket Enterprise control-plane binding prepared')
+          PY
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
