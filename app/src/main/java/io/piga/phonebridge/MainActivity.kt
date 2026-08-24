@@ -19,6 +19,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import org.json.JSONArray
@@ -52,6 +53,15 @@ class MainActivity : Activity() {
     private var signingPayload: String? = null
     private var pairingCode: String? = null
     private var publicKeyBase64: String? = null
+
+    private fun fullCapabilities(): JSONArray = JSONArray()
+        .put("pocket.notification")
+        .put("pocket.clipboard.write")
+        .put("pocket.intent.url")
+        .put("pocket.tts")
+        .put("pocket.app.launch")
+        .put("pocket.share.text")
+        .put("pocket.orchestration.verify")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -158,7 +168,7 @@ class MainActivity : Activity() {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(36, 60, 36, 36)
+            setPadding(36, 60, 36, 72)
             addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(baseUrl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(deviceIdField, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -174,7 +184,10 @@ class MainActivity : Activity() {
             addView(pairButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(confirmButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-        setContentView(layout)
+        setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            addView(layout, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        })
 
         refreshRuntimeStatus()
         if (prefs.getBoolean("paired", false)) startBridgeRuntime()
@@ -255,7 +268,7 @@ class MainActivity : Activity() {
                 val deviceId = ensureDeviceId()
                 val pub = getPublicKeyBase64()
                 publicKeyBase64 = pub
-                val capabilities = JSONObject().put("scopes", JSONArray().put("pocket.notification"))
+                val capabilities = JSONObject().put("scopes", fullCapabilities())
                 val body = JSONObject()
                     .put("deviceId", deviceId)
                     .put("publicKey", pub)
@@ -304,6 +317,7 @@ class MainActivity : Activity() {
                     .put("signature", sig)
                 val response = postJson("$root/api/bridge/pairing/confirm", body)
                 val pairingId = response.optString("pairingId")
+                require(pairingId.isNotBlank()) { "Missing pairingId in confirmation response." }
                 prefs.edit()
                     .putBoolean("paired", true)
                     .putString("pairing_id", pairingId)
