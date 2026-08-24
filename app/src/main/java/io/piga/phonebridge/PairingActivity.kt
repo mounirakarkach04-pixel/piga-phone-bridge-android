@@ -14,7 +14,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -26,17 +25,16 @@ import java.util.UUID
 
 class PairingActivity : Activity() {
     private val alias = "piga_phone_bridge_device_key"
-    private val defaultBaseUrl = "https://d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev"
+    private val defaultBaseUrl = "https://ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
 
     private lateinit var status: TextView
     private lateinit var baseUrl: EditText
-    private lateinit var bootstrapCode: EditText
-    private lateinit var pairButton: Button
+    private lateinit var pairingCodeInput: EditText
+    private lateinit var challengeButton: Button
     private lateinit var confirmButton: Button
-    private var challengeId: String? = null
-    private var signingPayload: String? = null
-    private var pairingCode: String? = null
+    private var pairingId: String? = null
+    private var challenge: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,13 +69,13 @@ class PairingActivity : Activity() {
             setTextIsSelectable(true)
             minLines = 3
         }
-        bootstrapCode = EditText(this).apply {
-            hint = "One-time bootstrap code"
+        pairingCodeInput = EditText(this).apply {
+            hint = "6-digit owner approval code"
             setSingleLine(true)
         }
-        pairButton = Button(this).apply {
-            text = "PAIR DEVICE"
-            setOnClickListener { startPairing() }
+        challengeButton = Button(this).apply {
+            text = "REQUEST CHALLENGE"
+            setOnClickListener { requestChallenge() }
         }
         confirmButton = Button(this).apply {
             text = "CONFIRM PAIRING"
@@ -97,8 +95,8 @@ class PairingActivity : Activity() {
             addView(baseUrl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(device, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(key, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(bootstrapCode, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(pairButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(pairingCodeInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(challengeButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(confirmButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(backButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
@@ -108,82 +106,89 @@ class PairingActivity : Activity() {
         })
     }
 
-    private fun startPairing() {
-        val code = bootstrapCode.text.toString().trim()
-        if (code.isBlank()) {
-            status.text = "Pairing blocked: enter a fresh Owner Bootstrap code."
-            return
-        }
-        pairButton.isEnabled = false
+    private fun requestChallenge() {
+        challengeButton.isEnabled = false
         confirmButton.isEnabled = false
-        status.text = "Requesting signed pairing challenge…"
+        status.text = "Requesting pairing challenge…"
         Thread {
             try {
                 val root = baseUrl.text.toString().trim().removeSuffix("/")
+                require(root.startsWith("https://")) { "Control Plane must use HTTPS." }
                 prefs.edit().putString("base_url", root).apply()
-                val scopes = JSONArray()
-                    .put("pocket.notification")
-                    .put("pocket.clipboard.write")
-                    .put("pocket.intent.url")
-                    .put("pocket.tts")
-                    .put("pocket.app.launch")
-                    .put("pocket.share.text")
-                    .put("pocket.orchestration.verify")
                 val body = JSONObject()
                     .put("deviceId", ensureDeviceId())
                     .put("publicKey", getPublicKeyBase64())
-                    .put("capabilities", JSONObject().put("scopes", scopes))
-                    .put("bootstrapCode", code)
+                    .put("keyAlgorithm", "EC-P256-SHA256")
                 val response = postJson("$root/api/bridge/pairing/challenge", body)
-                challengeId = response.getString("challengeId")
-                signingPayload = response.getString("signingPayload")
-                pairingCode = response.getString("pairingCode")
+                val pid = response.getString("pairingId")
+                val chal = response.getString("challenge")
+                require(pid.isNotBlank() && chal.isNotBlank()) { "Invalid challenge response." }
+                pairingId = pid
+                challenge = chal
+                prefs.edit().putBoolean("paired", false).remove("pairing_id").apply()
                 runOnUiThread {
-                    status.text = "Challenge received. Pairing code: ${pairingCode ?: ""}\nTap CONFIRM PAIRING before expiry."
-                    pairButton.isEnabled = true
+                    status.text = "Challenge created. Approve pairing in Pocket Enterprise, enter the 6-digit code here, then tap CONFIRM PAIRING."
+                    challengeButton.isEnabled = true
                     confirmButton.isEnabled = true
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    status.text = "Pairing request failed: ${e.message ?: e.javaClass.simpleName}"
-                    pairButton.isEnabled = true
+                    status.text = "Challenge request failed: ${e.message ?: e.javaClass.simpleName}"
+                    challengeButton.isEnabled = true
                 }
             }
         }.start()
     }
 
     private fun confirmPairing() {
-        val cid = challengeId ?: return
-        val payload = signingPayload ?: return
-        val code = pairingCode ?: return
+        val pid = pairingId ?: run {
+            status.text = "Pairing blocked: request a fresh challenge first."
+            return
+        }
+        val chal = challenge ?: run {
+            status.text = "Pairing blocked: challenge missing."
+            return
+        }
+        val code = pairingCodeInput.text.toString().trim()
+        if (!code.matches(Regex("^\\d{6}$"))) {
+            status.text = "Pairing blocked: enter the 6-digit owner approval code."
+            return
+        }
+
         confirmButton.isEnabled = false
         status.text = "Signing and confirming pairing…"
         Thread {
             try {
                 val root = baseUrl.text.toString().trim().removeSuffix("/")
+                val signingPayload = "PAIR_CONFIRM\n$pid\n$chal"
                 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
                 val signer = Signature.getInstance("SHA256withECDSA")
                 signer.initSign(entry.privateKey)
-                signer.update(payload.toByteArray(Charsets.UTF_8))
+                signer.update(signingPayload.toByteArray(Charsets.UTF_8))
                 val signature = Base64.encodeToString(signer.sign(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
                 val body = JSONObject()
-                    .put("challengeId", cid)
                     .put("deviceId", ensureDeviceId())
-                    .put("publicKey", getPublicKeyBase64())
+                    .put("pairingId", pid)
                     .put("pairingCode", code)
                     .put("signature", signature)
                 val response = postJson("$root/api/bridge/pairing/confirm", body)
-                val pairingId = response.optString("pairingId")
-                require(pairingId.isNotBlank()) { "Missing pairingId in confirmation response." }
-                prefs.edit().putBoolean("paired", true).putString("pairing_id", pairingId).apply()
+                val confirmedPairingId = response.optString("pairingId", pid)
+                require(confirmedPairingId == pid) { "Pairing confirmation returned unexpected pairingId." }
+                require(
+                    prefs.edit()
+                        .putBoolean("paired", true)
+                        .putString("pairing_id", pid)
+                        .putString("base_url", root)
+                        .commit()
+                ) { "Unable to persist paired state." }
                 runOnUiThread {
-                    bootstrapCode.setText("")
+                    pairingCodeInput.setText("")
                     status.text = "PAIRED. Starting governed bridge runtime…"
                     val service = Intent(this@PairingActivity, BridgeService::class.java)
                     if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
                     confirmButton.isEnabled = false
-                    pairButton.isEnabled = true
+                    challengeButton.isEnabled = true
                 }
             } catch (e: Exception) {
                 runOnUiThread {
