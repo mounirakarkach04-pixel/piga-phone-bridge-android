@@ -34,8 +34,8 @@ import java.util.UUID
 
 class MainActivity : Activity() {
     private val alias = "piga_phone_bridge_device_key"
-    private val currentBaseUrl = "https://d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev"
-    private val legacyBaseHost = "ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev"
+    private val currentBaseUrl = "https://ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev"
+    private val legacyBaseHost = "d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
 
     private lateinit var status: TextView
@@ -80,6 +80,9 @@ class MainActivity : Activity() {
             hint = "Bridge base URL"
             setText(resolveBaseUrl())
             setSingleLine(true)
+            isFocusable = false
+            isCursorVisible = false
+            setTextIsSelectable(true)
         }
 
         deviceIdField = EditText(this).apply {
@@ -196,6 +199,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::status.isInitialized) {
+            resolveBaseUrl()
             refreshRuntimeStatus()
             if (prefs.getBoolean("paired", false)) startBridgeRuntime()
         }
@@ -211,11 +215,16 @@ class MainActivity : Activity() {
 
     private fun resolveBaseUrl(): String {
         val stored = prefs.getString("base_url", null)?.trim()?.removeSuffix("/")
-        if (stored.isNullOrBlank() || stored.contains(legacyBaseHost)) {
+        if (stored != currentBaseUrl) {
             prefs.edit().putString("base_url", currentBaseUrl).apply()
-            return currentBaseUrl
         }
-        return stored
+        return currentBaseUrl
+    }
+
+    private fun requireCanonicalRoot(candidate: String): String {
+        val root = candidate.trim().removeSuffix("/")
+        require(root == currentBaseUrl) { "Control-plane origin mismatch; bridge is fail-closed." }
+        return root
     }
 
     private fun ensureDeviceId(): String {
@@ -248,8 +257,9 @@ class MainActivity : Activity() {
         val master = prefs.getBoolean("master_autonomy", false)
         val stop = prefs.getBoolean("emergency_stop", false)
         val notifications = hasNotificationPermission()
+        val originTrusted = resolveBaseUrl() == currentBaseUrl
         permissionStatus.text = "Android notifications: ${if (notifications) "ERTEILT" else "NICHT ERTEILT"}"
-        status.text = "PIGA Phone Bridge\n\nStatus: ${if (paired) "PAIRED" else "NOT PAIRED"}\nRuntime: $runtime\nMaster-Autonomy: ${if (master) "ON" else "OFF"}\nEmergency Stop: ${if (stop) "ON" else "OFF"}\nNotifications: ${if (notifications) "GRANTED" else "DENIED"}\nLast poll: ${if (lastPoll > 0) lastPoll else "pending"}\nSafety sync: ${if (safetySync > 0) safetySync else "pending"}\nDevice: $deviceId"
+        status.text = "PIGA Phone Bridge\n\nStatus: ${if (paired) "PAIRED" else "NOT PAIRED"}\nRuntime: $runtime\nOrigin: ${if (originTrusted) "TRUSTED" else "BLOCKED"}\nVersion gate: 0.1.17 / 18\nMaster-Autonomy: ${if (master) "ON" else "OFF"}\nEmergency Stop: ${if (stop) "ON" else "OFF"}\nNotifications: ${if (notifications) "GRANTED" else "DENIED"}\nLast poll: ${if (lastPoll > 0) lastPoll else "pending"}\nSafety sync: ${if (safetySync > 0) safetySync else "pending"}\nDevice: $deviceId"
     }
 
     private fun startPairing() {
@@ -263,7 +273,7 @@ class MainActivity : Activity() {
         status.text = "Requesting pairing challenge…"
         Thread {
             try {
-                val root = baseUrl.text.toString().trim().removeSuffix("/")
+                val root = requireCanonicalRoot(baseUrl.text.toString())
                 prefs.edit().putString("base_url", root).apply()
                 val deviceId = ensureDeviceId()
                 val pub = getPublicKeyBase64()
@@ -301,7 +311,7 @@ class MainActivity : Activity() {
         status.text = "Signing and confirming pairing…"
         Thread {
             try {
-                val root = baseUrl.text.toString().trim().removeSuffix("/")
+                val root = requireCanonicalRoot(baseUrl.text.toString())
                 val deviceId = ensureDeviceId()
                 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
@@ -321,6 +331,7 @@ class MainActivity : Activity() {
                 prefs.edit()
                     .putBoolean("paired", true)
                     .putString("pairing_id", pairingId)
+                    .putString("base_url", currentBaseUrl)
                     .apply()
                 runOnUiThread {
                     bootstrapCodeInput.setText("")
@@ -339,6 +350,11 @@ class MainActivity : Activity() {
     }
 
     private fun startBridgeRuntime() {
+        val root = resolveBaseUrl()
+        if (root != currentBaseUrl) {
+            status.text = "Runtime blocked: untrusted control-plane origin."
+            return
+        }
         val intent = Intent(this, BridgeService::class.java)
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
         Thread {
@@ -348,7 +364,9 @@ class MainActivity : Activity() {
     }
 
     private fun postJson(url: String, body: JSONObject): JSONObject {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        val target = URL(url)
+        require("${target.protocol}://${target.host}" == currentBaseUrl) { "Outbound origin mismatch; blocked." }
+        val connection = (target.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 15000
             readTimeout = 15000
