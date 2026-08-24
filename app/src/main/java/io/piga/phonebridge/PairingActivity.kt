@@ -2,6 +2,7 @@ package io.piga.phonebridge
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.security.keystore.KeyGenParameterSpec
@@ -26,7 +27,7 @@ import java.util.UUID
 
 class PairingActivity : Activity() {
     private val alias = "piga_phone_bridge_device_key"
-    private val defaultBaseUrl = "https://d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev"
+    private val defaultBaseUrl = ""
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
 
     private lateinit var status: TextView
@@ -52,7 +53,7 @@ class PairingActivity : Activity() {
             setPadding(16, 16, 16, 24)
         }
         baseUrl = EditText(this).apply {
-            hint = "Control Plane URL"
+            hint = "Canonical Control Plane URL"
             setText(prefs.getString("base_url", defaultBaseUrl) ?: defaultBaseUrl)
             setSingleLine(true)
         }
@@ -72,7 +73,7 @@ class PairingActivity : Activity() {
             minLines = 3
         }
         bootstrapCode = EditText(this).apply {
-            hint = "One-time bootstrap code"
+            hint = "Owner bootstrap code or piga://pair link"
             setSingleLine(true)
         }
         pairButton = Button(this).apply {
@@ -108,19 +109,42 @@ class PairingActivity : Activity() {
         })
     }
 
+    private data class RuntimeBinding(val root: String, val code: String)
+
+    private fun resolveRuntimeBinding(): RuntimeBinding {
+        val raw = bootstrapCode.text.toString().trim()
+        if (raw.startsWith("piga://pair", ignoreCase = true)) {
+            val uri = Uri.parse(raw)
+            val root = uri.getQueryParameter("base")?.trim()?.removeSuffix("/").orEmpty()
+            val code = uri.getQueryParameter("code")?.trim().orEmpty()
+            require(root.startsWith("https://")) { "Bootstrap link has no valid HTTPS runtime." }
+            require(code.isNotBlank()) { "Bootstrap link has no one-time code." }
+            baseUrl.setText(root)
+            return RuntimeBinding(root, code)
+        }
+        val root = baseUrl.text.toString().trim().removeSuffix("/")
+        require(root.startsWith("https://")) { "Enter the current HTTPS Control Plane URL or paste a piga://pair bootstrap link." }
+        require(raw.isNotBlank()) { "Enter a fresh Owner Bootstrap code." }
+        return RuntimeBinding(root, raw)
+    }
+
     private fun startPairing() {
-        val code = bootstrapCode.text.toString().trim()
-        if (code.isBlank()) {
-            status.text = "Pairing blocked: enter a fresh Owner Bootstrap code."
+        val binding = try {
+            resolveRuntimeBinding()
+        } catch (e: Exception) {
+            status.text = "Pairing blocked: ${e.message ?: "invalid runtime bootstrap"}"
             return
         }
         pairButton.isEnabled = false
         confirmButton.isEnabled = false
-        status.text = "Requesting signed pairing challenge…"
+        status.text = "Binding device to canonical runtime and requesting signed challenge…"
         Thread {
             try {
-                val root = baseUrl.text.toString().trim().removeSuffix("/")
-                prefs.edit().putString("base_url", root).apply()
+                prefs.edit()
+                    .putString("base_url", binding.root)
+                    .putBoolean("paired", false)
+                    .remove("pairing_id")
+                    .apply()
                 val scopes = JSONArray()
                     .put("pocket.notification")
                     .put("pocket.clipboard.write")
@@ -133,19 +157,20 @@ class PairingActivity : Activity() {
                     .put("deviceId", ensureDeviceId())
                     .put("publicKey", getPublicKeyBase64())
                     .put("capabilities", JSONObject().put("scopes", scopes))
-                    .put("bootstrapCode", code)
-                val response = postJson("$root/api/bridge/pairing/challenge", body)
+                    .put("bootstrapCode", binding.code)
+                val response = postJson("${binding.root}/api/bridge/pairing/challenge", body)
                 challengeId = response.getString("challengeId")
                 signingPayload = response.getString("signingPayload")
                 pairingCode = response.getString("pairingCode")
                 runOnUiThread {
-                    status.text = "Challenge received. Pairing code: ${pairingCode ?: ""}\nTap CONFIRM PAIRING before expiry."
+                    status.text = "Canonical runtime accepted device. Pairing code: ${pairingCode ?: ""}\nTap CONFIRM PAIRING before expiry."
                     pairButton.isEnabled = true
                     confirmButton.isEnabled = true
                 }
             } catch (e: Exception) {
+                prefs.edit().putBoolean("paired", false).remove("pairing_id").apply()
                 runOnUiThread {
-                    status.text = "Pairing request failed: ${e.message ?: e.javaClass.simpleName}"
+                    status.text = "Pairing request failed closed: ${e.message ?: e.javaClass.simpleName}"
                     pairButton.isEnabled = true
                 }
             }
@@ -157,10 +182,11 @@ class PairingActivity : Activity() {
         val payload = signingPayload ?: return
         val code = pairingCode ?: return
         confirmButton.isEnabled = false
-        status.text = "Signing and confirming pairing…"
+        status.text = "Signing and confirming canonical-runtime pairing…"
         Thread {
             try {
                 val root = baseUrl.text.toString().trim().removeSuffix("/")
+                require(root.startsWith("https://")) { "Canonical runtime URL missing." }
                 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
                 val signer = Signature.getInstance("SHA256withECDSA")
@@ -176,18 +202,23 @@ class PairingActivity : Activity() {
                 val response = postJson("$root/api/bridge/pairing/confirm", body)
                 val pairingId = response.optString("pairingId")
                 require(pairingId.isNotBlank()) { "Missing pairingId in confirmation response." }
-                prefs.edit().putBoolean("paired", true).putString("pairing_id", pairingId).apply()
+                prefs.edit()
+                    .putString("base_url", root)
+                    .putBoolean("paired", true)
+                    .putString("pairing_id", pairingId)
+                    .apply()
                 runOnUiThread {
                     bootstrapCode.setText("")
-                    status.text = "PAIRED. Starting governed bridge runtime…"
+                    status.text = "PAIRED to canonical runtime. Starting governed bridge runtime…"
                     val service = Intent(this@PairingActivity, BridgeService::class.java)
                     if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
                     confirmButton.isEnabled = false
                     pairButton.isEnabled = true
                 }
             } catch (e: Exception) {
+                prefs.edit().putBoolean("paired", false).remove("pairing_id").apply()
                 runOnUiThread {
-                    status.text = "Pairing confirmation failed: ${e.message ?: e.javaClass.simpleName}"
+                    status.text = "Pairing confirmation failed closed: ${e.message ?: e.javaClass.simpleName}"
                     confirmButton.isEnabled = true
                 }
             }
