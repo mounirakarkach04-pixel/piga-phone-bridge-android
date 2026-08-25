@@ -23,21 +23,22 @@ jobs:
       - name: Verify PIGA cross-plane synchronization
         run: python scripts/check_piga_sync.py
 
-      - name: Bind APK to Pocket Enterprise control plane
+      - name: Verify canonical control-plane discovery manifest
         run: |
           python - <<'PY'
+          import json
           from pathlib import Path
-          p = Path('app/src/main/java/io/piga/phonebridge/PairingActivity.kt')
-          s = p.read_text()
-          old = 'https://d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev'
-          new = 'https://ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev'
-          if old in s:
-              s = s.replace(old, new)
-          elif new not in s:
-              raise SystemExit('Neither legacy nor Pocket Enterprise control-plane URL found; fail closed')
-          s = s.replace('setText(prefs.getString("base_url", defaultBaseUrl) ?: defaultBaseUrl)', 'setText(defaultBaseUrl)')
-          p.write_text(s)
-          print('Pocket Enterprise control-plane binding verified')
+          from urllib.parse import urlparse
+          p = Path('control-plane.json')
+          data = json.loads(p.read_text())
+          assert data['schema'] == 'piga.control-plane-discovery.v1'
+          assert int(data['epoch']) > 0
+          assert data['governance']['mode'] == 'fail-closed'
+          assert data['governance']['materialChangeRequiresReEntry'] is True
+          u = urlparse(data['controlPlaneUrl'])
+          assert u.scheme == 'https' and u.hostname and not u.username and not u.password
+          assert not u.query and not u.fragment
+          print('Canonical control-plane discovery manifest: PASS')
           PY
 
       - name: Set up JDK 17
