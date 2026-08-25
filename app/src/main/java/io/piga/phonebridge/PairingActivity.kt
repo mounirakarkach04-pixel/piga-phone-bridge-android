@@ -25,7 +25,6 @@ import java.util.UUID
 
 class PairingActivity : Activity() {
     private val alias = "piga_phone_bridge_device_key"
-    private val defaultBaseUrl = "https://ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
 
     private lateinit var status: TextView
@@ -50,8 +49,8 @@ class PairingActivity : Activity() {
             setPadding(16, 16, 16, 24)
         }
         baseUrl = EditText(this).apply {
-            hint = "Control Plane URL"
-            setText(prefs.getString("base_url", defaultBaseUrl) ?: defaultBaseUrl)
+            hint = "Control Plane URL (auto-discovered if blank)"
+            setText(prefs.getString("base_url", "") ?: "")
             setSingleLine(true)
         }
         val device = EditText(this).apply {
@@ -109,12 +108,13 @@ class PairingActivity : Activity() {
     private fun requestChallenge() {
         challengeButton.isEnabled = false
         confirmButton.isEnabled = false
-        status.text = "Requesting pairing challenge…"
+        status.text = "Resolving canonical control plane…"
         Thread {
             try {
-                val root = baseUrl.text.toString().trim().removeSuffix("/")
+                val fallback = baseUrl.text.toString().trim().removeSuffix("/").takeIf { it.isNotBlank() }
+                val root = ControlPlaneResolver.resolve(fallback)
                 require(root.startsWith("https://")) { "Control Plane must use HTTPS." }
-                prefs.edit().putString("base_url", root).apply()
+                require(prefs.edit().putString("base_url", root).commit()) { "Unable to persist canonical control plane." }
                 val body = JSONObject()
                     .put("deviceId", ensureDeviceId())
                     .put("publicKey", getPublicKeyBase64())
@@ -127,7 +127,8 @@ class PairingActivity : Activity() {
                 challenge = chal
                 prefs.edit().putBoolean("paired", false).remove("pairing_id").apply()
                 runOnUiThread {
-                    status.text = "Challenge created. Approve pairing in Pocket Enterprise, enter the 6-digit code here, then tap CONFIRM PAIRING."
+                    baseUrl.setText(root)
+                    status.text = "Challenge created via canonical control plane. Approve pairing in Pocket Enterprise, enter the 6-digit code here, then tap CONFIRM PAIRING."
                     challengeButton.isEnabled = true
                     confirmButton.isEnabled = true
                 }
@@ -159,7 +160,8 @@ class PairingActivity : Activity() {
         status.text = "Signing and confirming pairing…"
         Thread {
             try {
-                val root = baseUrl.text.toString().trim().removeSuffix("/")
+                val fallback = baseUrl.text.toString().trim().removeSuffix("/").takeIf { it.isNotBlank() }
+                val root = ControlPlaneResolver.resolve(fallback)
                 val signingPayload = "PAIR_CONFIRM\n$pid\n$chal"
                 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
@@ -183,6 +185,7 @@ class PairingActivity : Activity() {
                         .commit()
                 ) { "Unable to persist paired state." }
                 runOnUiThread {
+                    baseUrl.setText(root)
                     pairingCodeInput.setText("")
                     status.text = "PAIRED. Starting governed bridge runtime…"
                     val service = Intent(this@PairingActivity, BridgeService::class.java)
