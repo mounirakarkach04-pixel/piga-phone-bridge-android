@@ -25,6 +25,18 @@ class BridgeRecoveryWorker(
         }
 
         return try {
+            val previousRoot = prefs.getString("base_url", null)
+            val canonicalRoot = ControlPlaneResolver.resolve(previousRoot)
+            if (canonicalRoot != previousRoot) {
+                require(
+                    prefs.edit()
+                        .putString("base_url", canonicalRoot)
+                        .putString("recovery_status", "CONTROL_PLANE_REENTRY")
+                        .putLong("control_plane_reentry_ms", System.currentTimeMillis())
+                        .commit()
+                ) { "Unable to persist canonical control-plane re-entry" }
+            }
+
             val intent = Intent(applicationContext, BridgeService::class.java)
             if (Build.VERSION.SDK_INT >= 26) {
                 applicationContext.startForegroundService(intent)
@@ -37,7 +49,7 @@ class BridgeRecoveryWorker(
                 .apply()
             Result.success()
         } catch (t: Throwable) {
-            // Android 15+ may reject background FGS starts. Fail closed and let WorkManager retry.
+            // Fail closed. Discovery/runtime recovery is retried by WorkManager.
             prefs.edit()
                 .putString("recovery_status", "DEFERRED ${t.javaClass.simpleName}")
                 .putLong("last_recovery_ms", System.currentTimeMillis())
