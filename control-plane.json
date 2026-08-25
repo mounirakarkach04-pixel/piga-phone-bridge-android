@@ -1,0 +1,10 @@
+{
+  "schema": "piga.control-plane-discovery.v1",
+  "epoch": 1,
+  "controlPlaneUrl": "https://ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev",
+  "governance": {
+    "mode": "fail-closed",
+    "authority": "repository-controlled-canonical-pointer",
+    "materialChangeRequiresReEntry": true
+  }
+}
