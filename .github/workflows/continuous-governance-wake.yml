@@ -1,6 +1,11 @@
 name: PIGA Continuous Governance Wake
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/continuous-governance-wake.yml'
+      - 'control-plane.json'
   workflow_dispatch:
   repository_dispatch:
     types: [piga-governance-wake]
