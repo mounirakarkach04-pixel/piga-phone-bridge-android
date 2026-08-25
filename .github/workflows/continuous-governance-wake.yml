@@ -1,0 +1,95 @@
+name: PIGA Continuous Governance Wake
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [piga-governance-wake]
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  contents: read
+  id-token: write
+  actions: write
+
+concurrency:
+  group: piga-continuous-governance-wake
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve canonical control plane
+        id: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/control-plane.json"
+          JSON="$(curl --fail --silent --show-error --location --max-time 15 "$MANIFEST")"
+          ROOT="$(python -c 'import json,sys; print(json.load(sys.stdin)["controlPlaneUrl"].rstrip("/"))' <<<"$JSON")"
+          test -n "$ROOT"
+          case "$ROOT" in https://*) ;; *) echo "Non-HTTPS control plane rejected" >&2; exit 1;; esac
+          echo "root=$ROOT" >> "$GITHUB_OUTPUT"
+
+      - name: Obtain GitHub OIDC token
+        id: oidc
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUDIENCE="piga-pocket-enterprise"
+          RESPONSE="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
+          TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"$RESPONSE")"
+          test -n "$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Drive admitted cycles immediately
+        id: drive
+        env:
+          ROOT: ${{ steps.control.outputs.root }}
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          more="true"
+          cycles=0
+          max_cycles=250
+          last='{}'
+          while [ "$more" = "true" ] && [ "$cycles" -lt "$max_cycles" ]; do
+            cycles=$((cycles + 1))
+            last="$(curl --fail --silent --show-error --location --max-time 45 \
+              -X POST "$ROOT/api/factory/trigger/next" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $OIDC_TOKEN" \
+              -H "X-PIGA-Trigger-Source: github-actions" \
+              -H "X-PIGA-Trigger-Repository: $GITHUB_REPOSITORY" \
+              --data '{"reason":"continuous-governance-wake","engineCount":5,"createAdditionalEngine":false}')"
+            more="$(python -c 'import json,sys; print(str(bool(json.load(sys.stdin).get("moreReady", False))).lower())' <<<"$last")"
+            status="$(python -c 'import json,sys; print(json.load(sys.stdin).get("status","UNKNOWN"))' <<<"$last")"
+            echo "cycle=$cycles status=$status moreReady=$more"
+            case "$status" in
+              PASS|ALLOW|RUNNING|IDLE|HEARTBEAT|DELAY|BLOCK|BLOCKED|UNKNOWN|EXPIRED) ;;
+              *) echo "Unexpected trigger status; fail closed" >&2; exit 1;;
+            esac
+            if [ "$more" = "true" ]; then sleep 1; fi
+          done
+          echo "cycles=$cycles" >> "$GITHUB_OUTPUT"
+          echo "more=$more" >> "$GITHUB_OUTPUT"
+
+      - name: Immediate continuation dispatch
+        if: steps.drive.outputs.more == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -X POST "https://api.github.com/repos/$GITHUB_REPOSITORY/dispatches" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --data '{"event_type":"piga-governance-wake","client_payload":{"reason":"immediate-continuation"}}'
