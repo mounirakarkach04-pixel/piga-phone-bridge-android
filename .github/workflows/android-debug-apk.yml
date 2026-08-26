@@ -2,7 +2,7 @@ name: Android Debug APK
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "codex/frictionless-pairing-20260826"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
