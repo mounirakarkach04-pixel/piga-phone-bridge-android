@@ -61,6 +61,10 @@ class BridgeService : Service() {
 
     private fun pollLoop() {
         while (running.get()) {
+            // Local liveness evidence is deliberately independent from control-plane
+            // reachability. A network/API outage must never look like a dead runtime.
+            prefs.edit().putLong("runtime_heartbeat_ms", System.currentTimeMillis()).apply()
+
             try {
                 if (!prefs.getBoolean("paired", false)) {
                     Thread.sleep(5000)
@@ -74,6 +78,7 @@ class BridgeService : Service() {
                     ?: throw IllegalStateException("Missing pairing id")
 
                 syncSafety(root, deviceId, pairingId)
+                reconcileExecutionJournals()
                 retryPendingResults(root, deviceId, pairingId)
 
                 val canonicalPath = "/api/bridge/devices/$deviceId/commands"
@@ -173,15 +178,25 @@ class BridgeService : Service() {
         }
 
         val pendingKey = CommandReceiptContract.outboxKey(commandId)
-        if (prefs.contains(pendingKey)) {
-            // A local terminal effect already exists and is awaiting delivery.
-            // Never re-run it or overwrite it with a replay rejection.
-            return
-        }
-
-        if (prefs.getBoolean("command_nonce_$commandNonce", false)) {
-            sendResult(root, deviceId, pairingId, commandId, "rejected", "Command nonce replay rejected.")
-            return
+        val journalKey = CommandExecutionJournal.key(commandId)
+        when (
+            CommandExecutionPolicy.decide(
+                hasPendingResult = prefs.contains(pendingKey),
+                hasExecutionJournal = prefs.contains(journalKey),
+                nonceReplay = prefs.getBoolean("command_nonce_$commandNonce", false)
+            )
+        ) {
+            CommandExecutionPolicy.Decision.REDELIVER_PENDING_RESULT -> return
+            CommandExecutionPolicy.Decision.REPORT_UNCERTAIN -> {
+                reconcileExecutionJournal(journalKey)
+                retryPendingResults(root, deviceId, pairingId)
+                return
+            }
+            CommandExecutionPolicy.Decision.REJECT_NONCE_REPLAY -> {
+                sendResult(root, deviceId, pairingId, commandId, "rejected", "Command nonce replay rejected.")
+                return
+            }
+            CommandExecutionPolicy.Decision.EXECUTE -> Unit
         }
 
         val now = Instant.now()
@@ -211,9 +226,20 @@ class BridgeService : Service() {
         }
 
         sendAck(root, deviceId, pairingId, commandId, "accepted")
-        require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {
-            "Unable to persist command nonce before execution."
-        }
+        val journal = CommandExecutionJournal.Entry(
+            commandId = commandId,
+            commandNonce = commandNonce,
+            startedAtMs = System.currentTimeMillis(),
+            jobId = factoryCorrelation?.jobId,
+            subjobId = factoryCorrelation?.subjobId,
+            verifiedPlanHash = factoryCorrelation?.verifiedPlanHash
+        )
+        require(
+            prefs.edit()
+                .putBoolean("command_nonce_$commandNonce", true)
+                .putString(journalKey, CommandExecutionJournal.encode(journal))
+                .commit()
+        ) { "Unable to persist nonce/effect journal before execution." }
 
         val outcome = try {
             val detail = when (type) {
@@ -250,6 +276,9 @@ class BridgeService : Service() {
         }
 
         persistPendingResult(outcome)
+        require(prefs.edit().remove(journalKey).commit()) {
+            "Terminal result persisted but effect journal cleanup failed."
+        }
         deliverPendingResult(root, deviceId, pairingId, outcome)
     }
 
@@ -261,6 +290,44 @@ class BridgeService : Service() {
         }
     }
 
+    private fun reconcileExecutionJournals() {
+        val journals = prefs.all.keys
+            .filter { it.startsWith(CommandExecutionJournal.KEY_PREFIX) }
+            .sorted()
+        for (key in journals) reconcileExecutionJournal(key)
+    }
+
+    private fun reconcileExecutionJournal(key: String) {
+        val raw = prefs.all[key] as? String
+        if (raw == null) {
+            quarantineLocalEntry(key, null, "effect_journal_type_invalid")
+            return
+        }
+        val entry = CommandExecutionJournal.decode(raw)
+        if (entry == null) {
+            quarantineLocalEntry(key, raw, "effect_journal_decode_failed")
+            return
+        }
+
+        val pendingKey = CommandReceiptContract.outboxKey(entry.commandId)
+        if (prefs.contains(pendingKey)) {
+            require(prefs.edit().remove(key).commit()) {
+                "Unable to clear redundant effect journal after terminal result persistence."
+            }
+            return
+        }
+
+        persistPendingResult(CommandExecutionJournal.uncertainResult(entry))
+        require(prefs.edit().remove(key).commit()) {
+            "Unable to clear effect journal after UNCERTAIN result persistence."
+        }
+        prefs.edit()
+            .putLong("uncertain_effect_count", prefs.getLong("uncertain_effect_count", 0L) + 1L)
+            .putString("last_uncertain_command_id", entry.commandId)
+            .putLong("last_uncertain_effect_ms", System.currentTimeMillis())
+            .apply()
+    }
+
     private fun retryPendingResults(root: String, deviceId: String, pairingId: String) {
         val pending = prefs.all.entries
             .filter { it.key.startsWith("pending_command_result_") }
@@ -268,11 +335,36 @@ class BridgeService : Service() {
 
         for ((key, raw) in pending) {
             val encoded = raw as? String
-                ?: throw IllegalStateException("Pending result outbox entry invalid: $key")
+            if (encoded == null) {
+                quarantineLocalEntry(key, null, "pending_result_type_invalid")
+                continue
+            }
             val result = CommandReceiptContract.decodePendingResult(encoded)
-                ?: throw IllegalStateException("Pending result outbox decode failed: $key")
+            if (result == null) {
+                quarantineLocalEntry(key, encoded, "pending_result_decode_failed")
+                continue
+            }
             deliverPendingResult(root, deviceId, pairingId, result)
         }
+    }
+
+    private fun quarantineLocalEntry(key: String, raw: String?, reason: String) {
+        val now = System.currentTimeMillis()
+        val quarantineKey = "quarantined_bridge_entry_${now}_${key.hashCode()}"
+        val evidence = JSONObject()
+            .put("sourceKey", key)
+            .put("reason", reason)
+            .put("quarantinedAtMs", now)
+            .put("raw", raw ?: JSONObject.NULL)
+            .toString()
+        require(
+            prefs.edit()
+                .putString(quarantineKey, evidence)
+                .remove(key)
+                .putLong("bridge_quarantine_count", prefs.getLong("bridge_quarantine_count", 0L) + 1L)
+                .putString("last_bridge_quarantine_reason", reason)
+                .commit()
+        ) { "Unable to quarantine malformed bridge entry." }
     }
 
     private fun deliverPendingResult(
