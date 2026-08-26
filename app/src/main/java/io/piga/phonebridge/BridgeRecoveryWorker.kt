@@ -55,13 +55,15 @@ class BridgeRecoveryWorker(
             // a small bounded window to publish a fresh local heartbeat and only then mark
             // the repair as verified. Otherwise defer and let WorkManager backoff/re-enter.
             var verifiedHeartbeat = 0L
-            repeat(10) {
+            var attempts = 0
+            while (attempts < 10 && verifiedHeartbeat == 0L) {
                 val observed = prefs.getLong("runtime_heartbeat_ms", 0L)
                 if (observed > previousHeartbeat && System.currentTimeMillis() - observed <= 5_000L) {
                     verifiedHeartbeat = observed
-                    return@repeat
+                } else {
+                    attempts += 1
+                    if (attempts < 10) Thread.sleep(500L)
                 }
-                Thread.sleep(500L)
             }
 
             val restartCount = prefs.getLong("recovery_restart_count", 0L) + 1L
