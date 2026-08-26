@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "PIGA_PHONE_ORCHESTRATION_V1.json"
+DISCOVERY = ROOT / "control-plane.json"
 GRADLE = ROOT / "app/build.gradle.kts"
 BRIDGE = ROOT / "app/src/main/java/io/piga/phonebridge/BridgeService.kt"
 VERIFIER = ROOT / "app/src/main/java/io/piga/phonebridge/OrchestrationPlanVerifier.kt"
@@ -12,11 +13,14 @@ RECOVERY = ROOT / "app/src/main/java/io/piga/phonebridge/BridgeRecoveryWorker.kt
 SCHEDULER = ROOT / "app/src/main/java/io/piga/phonebridge/BridgeRecoveryScheduler.kt"
 BOOT = ROOT / "app/src/main/java/io/piga/phonebridge/BootReceiver.kt"
 APP = ROOT / "app/src/main/java/io/piga/phonebridge/PigaBridgeApp.kt"
+MAIN = ROOT / "app/src/main/java/io/piga/phonebridge/MainActivity.kt"
+RESOLVER = ROOT / "app/src/main/java/io/piga/phonebridge/ControlPlaneResolver.kt"
 MANIFEST = ROOT / "app/src/main/AndroidManifest.xml"
 
 
 def main() -> int:
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    discovery = json.loads(DISCOVERY.read_text(encoding="utf-8"))
     gradle = GRADLE.read_text(encoding="utf-8")
     bridge = BRIDGE.read_text(encoding="utf-8")
     verifier = VERIFIER.read_text(encoding="utf-8")
@@ -24,13 +28,22 @@ def main() -> int:
     scheduler = SCHEDULER.read_text(encoding="utf-8")
     boot = BOOT.read_text(encoding="utf-8")
     app = APP.read_text(encoding="utf-8")
+    main = MAIN.read_text(encoding="utf-8")
+    resolver = RESOLVER.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
 
     assert contract["controlPlane"]["gearboxVersion"] == "1.6"
+    assert contract["controlPlane"]["canonicalOrigin"] == "https://pigapocket.com"
+    assert discovery["controlPlaneUrl"] == contract["controlPlane"]["canonicalOrigin"]
+    assert discovery["governance"]["mode"] == "fail-closed"
+    assert discovery["governance"]["materialChangeRequiresReEntry"] is True
+
     assert f'versionCode = {contract["phoneNode"]["minimumCompatibleVersionCode"]}' in gradle
     assert f'versionName = "{contract["phoneNode"]["minimumCompatibleVersionName"]}"' in gradle
     assert contract["phoneNode"]["applicationId"] in gradle
-    assert 'androidx.work:work-runtime-ktx:2.11.2' in gradle
+    assert "isMinifyEnabled = true" in gradle
+    assert "isShrinkResources = true" in gradle
+    assert "androidx.work:work-runtime-ktx:2.11.2" in gradle
 
     command_type = contract["command"]["type"]
     scope = contract["command"]["capabilityScope"]
@@ -54,8 +67,11 @@ def main() -> int:
     assert inv["symbolicNumerologyIsNotScientificEvidence"] is True
     assert inv["scripturalReferenceRequiresProvenanceAndContext"] is True
     assert inv["creativeNarrativeIsNotFactEvidence"] is True
+    assert inv["masterAutonomyRequiresExplicitUserEnablement"] is True
     assert inv["pairedAutonomyPersistsAcrossProcessRestart"] is True
     assert inv["emergencyStopDominatesAutonomy"] is True
+    assert inv["singleLauncherSurface"] is True
+    assert inv["canonicalControlPlanePinned"] is True
 
     assert "master_autonomy" in recovery
     assert "emergency_stop" in recovery
@@ -64,13 +80,22 @@ def main() -> int:
     assert "15, TimeUnit.MINUTES" in scheduler
     assert "ACTION_BOOT_COMPLETED" in boot
     assert "ACTION_MY_PACKAGE_REPLACED" in boot
-    assert 'putBoolean("master_autonomy", true)' in app
-    assert 'getBoolean("emergency_stop", false)' in app
+
+    assert 'putBoolean("master_autonomy", false)' in app
+    assert "paired && masterAutonomy && !emergencyStop" in app
     assert "BridgeRecoveryScheduler.requestRecovery(this)" in app
+    assert "ARMED_EXPLICIT" in main
+    assert "BLOCKED_NOT_PAIRED" in main
+    assert "CANONICAL_CONTROL_PLANE" in resolver
+    assert 'require(normalized == CANONICAL_CONTROL_PLANE)' in resolver
+
     assert "RECEIVE_BOOT_COMPLETED" in manifest
     assert ".PigaBridgeApp" in manifest
+    assert 'android:usesCleartextTraffic="false"' in manifest
+    assert manifest.count("android.intent.action.MAIN") == 1
+    assert manifest.count("android.intent.category.LAUNCHER") == 1
 
-    print("PIGA phone/control-plane persistent-autonomy synchronization v1.6: PASS")
+    print("PIGA phone/control-plane market-readiness synchronization v0.2.0: PASS")
     return 0
 
 
