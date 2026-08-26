@@ -19,6 +19,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import java.time.Instant
@@ -36,6 +37,8 @@ class PairingActivity : Activity() {
     private var pairingId: String? = null
     private var challenge: String? = null
     private var challengeExpiresAt: String? = null
+    private var pendingServerPublicKey: String? = null
+    private var pendingServerKeyId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -139,17 +142,27 @@ class PairingActivity : Activity() {
                 val pid = response.getString("pairingId")
                 val chal = response.getString("challenge")
                 val expiresAt = response.getString("expiresAt")
-                require(pid.isNotBlank() && chal.isNotBlank()) { "Invalid challenge response." }
+                val serverPublicKey = response.getString("serverPublicKey")
+                val serverKeyId = response.optString("serverKeyId").trim()
+                require(pid.isNotBlank() && chal.isNotBlank() && serverPublicKey.isNotBlank()) { "Invalid challenge response." }
+                if (serverKeyId.isNotBlank()) require(serverKeyId == keyId(serverPublicKey)) { "Server key id mismatch." }
                 pairingId = pid
                 challenge = chal
                 challengeExpiresAt = expiresAt
+                pendingServerPublicKey = serverPublicKey
+                pendingServerKeyId = serverKeyId.ifBlank { keyId(serverPublicKey) }
                 require(
                     prefs.edit()
                         .putBoolean("paired", false)
                         .remove("pairing_id")
+                        .remove("server_public_key")
+                        .remove("server_key_id")
+                        .putLong("bridge_counter", 0L)
                         .putString("pending_pairing_id", pid)
                         .putString("pending_pairing_challenge", chal)
                         .putString("pending_pairing_expires_at", expiresAt)
+                        .putString("pending_server_public_key", serverPublicKey)
+                        .putString("pending_server_key_id", pendingServerKeyId)
                         .commit()
                 ) { "Unable to persist pairing challenge." }
                 runOnUiThread {
@@ -186,14 +199,11 @@ class PairingActivity : Activity() {
             require(Instant.parse(expiresAt).isAfter(Instant.now())) { "Pairing link has expired." }
 
             restorePendingPairing()
-            require(pairingId == linkedPairingId) {
-                "Pairing link does not match the pending request on this phone."
-            }
+            require(pairingId == linkedPairingId) { "Pairing link does not match the pending request on this phone." }
             require(!challenge.isNullOrBlank()) { "Pending pairing challenge is unavailable." }
+            require(!pendingServerPublicKey.isNullOrBlank()) { "Pending server identity is unavailable." }
             val localExpiry = challengeExpiresAt
-            if (!localExpiry.isNullOrBlank()) {
-                require(Instant.parse(localExpiry).isAfter(Instant.now())) { "Pending pairing request has expired." }
-            }
+            if (!localExpiry.isNullOrBlank()) require(Instant.parse(localExpiry).isAfter(Instant.now())) { "Pending pairing request has expired." }
 
             baseUrl.setText(canonicalOrigin)
             pairingCodeInput.setText(code)
@@ -207,33 +217,22 @@ class PairingActivity : Activity() {
 
     private fun confirmPairing() {
         restorePendingPairing()
-        val pid = pairingId ?: run {
-            status.text = "Pairing blocked: request a fresh pairing first."
-            return
-        }
-        val chal = challenge ?: run {
-            status.text = "Pairing blocked: challenge missing."
-            return
-        }
+        val pid = pairingId ?: run { status.text = "Pairing blocked: request a fresh pairing first."; return }
+        val chal = challenge ?: run { status.text = "Pairing blocked: challenge missing."; return }
+        val expectedServerPublicKey = pendingServerPublicKey ?: run { status.text = "Pairing blocked: server identity missing."; return }
+        val expectedServerKeyId = pendingServerKeyId ?: keyId(expectedServerPublicKey)
         val localExpiry = challengeExpiresAt
         if (!localExpiry.isNullOrBlank()) {
             try {
                 if (!Instant.parse(localExpiry).isAfter(Instant.now())) {
-                    clearPendingPairing()
-                    status.text = "Pairing request expired. Start a fresh pairing."
-                    return
+                    clearPendingPairing(); status.text = "Pairing request expired. Start a fresh pairing."; return
                 }
             } catch (_: Exception) {
-                clearPendingPairing()
-                status.text = "Pairing request expiry is invalid. Start a fresh pairing."
-                return
+                clearPendingPairing(); status.text = "Pairing request expiry is invalid. Start a fresh pairing."; return
             }
         }
         val code = pairingCodeInput.text.toString().trim()
-        if (!code.matches(Regex("^\\d{6}$"))) {
-            status.text = "Pairing blocked: enter the 6-digit owner approval code."
-            return
-        }
+        if (!code.matches(Regex("^\\d{6}$"))) { status.text = "Pairing blocked: enter the 6-digit owner approval code."; return }
 
         confirmButton.isEnabled = false
         challengeButton.isEnabled = false
@@ -247,28 +246,29 @@ class PairingActivity : Activity() {
                 val signer = Signature.getInstance("SHA256withECDSA")
                 signer.initSign(entry.privateKey)
                 signer.update(signingPayload.toByteArray(Charsets.UTF_8))
-                val signature = Base64.encodeToString(signer.sign(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
-                val body = JSONObject()
-                    .put("deviceId", ensureDeviceId())
-                    .put("pairingId", pid)
-                    .put("pairingCode", code)
-                    .put("signature", signature)
+                val signature = Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
+                val body = JSONObject().put("deviceId", ensureDeviceId()).put("pairingId", pid).put("pairingCode", code).put("signature", signature)
                 val response = postJson("$root/api/bridge/pairing/confirm", body)
-                val confirmedPairingId = response.optString("pairingId", pid)
-                require(confirmedPairingId == pid) { "Pairing confirmation returned unexpected pairingId." }
+                val returnedServerPublicKey = response.getString("serverPublicKey")
+                val returnedServerKeyId = response.optString("serverKeyId").trim().ifBlank { keyId(returnedServerPublicKey) }
+                require(returnedServerPublicKey == expectedServerPublicKey) { "Server identity changed during pairing." }
+                require(returnedServerKeyId == expectedServerKeyId && returnedServerKeyId == keyId(returnedServerPublicKey)) { "Server key pin mismatch." }
                 require(
                     prefs.edit()
                         .putBoolean("paired", true)
                         .putString("pairing_id", pid)
                         .putString("base_url", root)
+                        .putString("server_public_key", returnedServerPublicKey)
+                        .putString("server_key_id", returnedServerKeyId)
+                        .putLong("bridge_counter", 0L)
                         .remove("pending_pairing_id")
                         .remove("pending_pairing_challenge")
                         .remove("pending_pairing_expires_at")
+                        .remove("pending_server_public_key")
+                        .remove("pending_server_key_id")
                         .commit()
                 ) { "Unable to persist paired state." }
-                pairingId = null
-                challenge = null
-                challengeExpiresAt = null
+                pairingId = null; challenge = null; challengeExpiresAt = null; pendingServerPublicKey = null; pendingServerKeyId = null
                 runOnUiThread {
                     baseUrl.setText(root)
                     pairingCodeInput.setText("")
@@ -293,21 +293,25 @@ class PairingActivity : Activity() {
         val storedId = prefs.getString("pending_pairing_id", null)?.trim()
         val storedChallenge = prefs.getString("pending_pairing_challenge", null)?.trim()
         val storedExpiry = prefs.getString("pending_pairing_expires_at", null)?.trim()
-        if (!storedId.isNullOrBlank() && !storedChallenge.isNullOrBlank()) {
+        val storedServerKey = prefs.getString("pending_server_public_key", null)?.trim()
+        val storedServerKeyId = prefs.getString("pending_server_key_id", null)?.trim()
+        if (!storedId.isNullOrBlank() && !storedChallenge.isNullOrBlank() && !storedServerKey.isNullOrBlank()) {
             pairingId = storedId
             challenge = storedChallenge
             challengeExpiresAt = storedExpiry
+            pendingServerPublicKey = storedServerKey
+            pendingServerKeyId = storedServerKeyId ?: keyId(storedServerKey)
         }
     }
 
     private fun clearPendingPairing() {
-        pairingId = null
-        challenge = null
-        challengeExpiresAt = null
+        pairingId = null; challenge = null; challengeExpiresAt = null; pendingServerPublicKey = null; pendingServerKeyId = null
         prefs.edit()
             .remove("pending_pairing_id")
             .remove("pending_pairing_challenge")
             .remove("pending_pairing_expires_at")
+            .remove("pending_server_public_key")
+            .remove("pending_server_key_id")
             .apply()
     }
 
@@ -335,6 +339,11 @@ class PairingActivity : Activity() {
     private fun getPublicKeyBase64(): String {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         return Base64.encodeToString(ks.getCertificate(alias).publicKey.encoded, Base64.NO_WRAP)
+    }
+
+    private fun keyId(publicKey: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(publicKey.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }.take(16)
     }
 
     private fun postJson(url: String, body: JSONObject): JSONObject {
