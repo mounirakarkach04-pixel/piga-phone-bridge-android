@@ -13,11 +13,12 @@ class BridgeRecoveryWorker(
     override fun doWork(): Result {
         val prefs = applicationContext.getSharedPreferences("piga_bridge", Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
+        val previousHeartbeat = prefs.getLong("runtime_heartbeat_ms", 0L)
         val snapshot = BridgeRecoveryPolicy.Snapshot(
             paired = prefs.getBoolean("paired", false),
             masterAutonomy = prefs.getBoolean("master_autonomy", false),
             emergencyStop = prefs.getBoolean("emergency_stop", false),
-            lastPollMs = prefs.getLong("last_poll_ms", 0L),
+            runtimeHeartbeatMs = previousHeartbeat,
             nowMs = now
         )
         val action = BridgeRecoveryPolicy.decide(snapshot)
@@ -49,16 +50,41 @@ class BridgeRecoveryWorker(
             } else {
                 applicationContext.startService(intent)
             }
-            prefs.edit()
-                .putString("recovery_status", "BRIDGE_RESTART_REQUESTED_STALE_HEARTBEAT")
-                .putLong("last_recovery_ms", now)
-                .putLong("recovery_restart_count", prefs.getLong("recovery_restart_count", 0L) + 1L)
-                .apply()
-            Result.success()
+
+            // A7SEM Reverse: a restart request is not recovery evidence. Give the runtime
+            // a small bounded window to publish a fresh local heartbeat and only then mark
+            // the repair as verified. Otherwise defer and let WorkManager backoff/re-enter.
+            var verifiedHeartbeat = 0L
+            repeat(10) {
+                val observed = prefs.getLong("runtime_heartbeat_ms", 0L)
+                if (observed > previousHeartbeat && System.currentTimeMillis() - observed <= 5_000L) {
+                    verifiedHeartbeat = observed
+                    return@repeat
+                }
+                Thread.sleep(500L)
+            }
+
+            val restartCount = prefs.getLong("recovery_restart_count", 0L) + 1L
+            if (verifiedHeartbeat > 0L) {
+                prefs.edit()
+                    .putString("recovery_status", "BRIDGE_RESTART_VERIFIED")
+                    .putLong("last_recovery_ms", System.currentTimeMillis())
+                    .putLong("recovery_restart_count", restartCount)
+                    .apply()
+                Result.success()
+            } else {
+                prefs.edit()
+                    .putString("recovery_status", "BRIDGE_RESTART_UNVERIFIED")
+                    .putLong("last_recovery_ms", System.currentTimeMillis())
+                    .putLong("recovery_restart_count", restartCount)
+                    .putLong("recovery_failure_count", prefs.getLong("recovery_failure_count", 0L) + 1L)
+                    .apply()
+                Result.retry()
+            }
         } catch (t: Throwable) {
             prefs.edit()
                 .putString("recovery_status", "DEFERRED_${t.javaClass.simpleName}")
-                .putLong("last_recovery_ms", now)
+                .putLong("last_recovery_ms", System.currentTimeMillis())
                 .putLong("recovery_failure_count", prefs.getLong("recovery_failure_count", 0L) + 1L)
                 .apply()
             Result.retry()
