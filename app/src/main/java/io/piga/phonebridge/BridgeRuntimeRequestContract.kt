@@ -8,6 +8,7 @@ package io.piga.phonebridge
 internal object BridgeRuntimeRequestContract {
     const val BRIDGE_VERSION = "0.2.0"
     const val BRIDGE_VERSION_CODE = 19
+    private const val MAX_SAFE_COUNTER = 9_007_199_254_740_991L
 
     fun canonicalPath(apiPath: String): String {
         require(apiPath.startsWith("/api/")) { "Bridge API path must start with /api/." }
@@ -34,7 +35,7 @@ internal object BridgeRuntimeRequestContract {
 
     fun nextCounter(current: Long): Long {
         require(current >= 0L) { "Runtime counter cannot be negative." }
-        require(current < Long.MAX_VALUE) { "Runtime counter exhausted." }
+        require(current < MAX_SAFE_COUNTER) { "Runtime counter exhausted." }
         return current + 1L
     }
 }
