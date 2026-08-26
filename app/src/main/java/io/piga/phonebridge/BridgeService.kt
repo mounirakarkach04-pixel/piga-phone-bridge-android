@@ -30,6 +30,9 @@ class BridgeService : Service() {
     private val alias = "piga_phone_bridge_device_key"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private val ttsLock = Object()
+    private val bridgeCounterLock = Object()
+    private val bridgeContractVersion = "0.1.17"
+    private val bridgeContractVersionCode = 18
     @Volatile private var ttsEngine: TextToSpeech? = null
     @Volatile private var ttsInitialized = false
     @Volatile private var ttsInitFailed = false
@@ -105,9 +108,30 @@ class BridgeService : Service() {
 
     private fun syncSafety(root: String, deviceId: String, pairingId: String) {
         val masterAutonomy = prefs.getBoolean("master_autonomy", false)
-        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        val emergencyStop = prefs.getBoolean("emergency_stop", true)
         val notificationPermission = hasNotificationPermission()
-        val body = "{\"masterAutonomy\":$masterAutonomy,\"notificationPermission\":$notificationPermission,\"emergencyStop\":$emergencyStop}"
+
+        if (!emergencyStop) {
+            val path = "/api/bridge/devices/$deviceId/status"
+            val status = signedRuntimeGet("$root$path", path, pairingId)
+            if (status.optBoolean("emergencyStop", true)) {
+                require(
+                    prefs.edit()
+                        .putBoolean("emergency_stop", true)
+                        .putBoolean("master_autonomy", false)
+                        .putString("autonomy_status", "BLOCKED_REMOTE_EMERGENCY_STOP")
+                        .commit()
+                ) { "Unable to persist remote Emergency Stop." }
+                throw IllegalStateException("Governance Emergency Stop remains active")
+            }
+            prefs.edit()
+                .putBoolean("notification_permission", notificationPermission)
+                .putLong("last_safety_sync_ms", System.currentTimeMillis())
+                .apply()
+            return
+        }
+
+        val body = "{\"masterAutonomy\":$masterAutonomy,\"notificationsGranted\":$notificationPermission,\"emergencyStop\":true}"
         val path = "/api/bridge/devices/$deviceId/safety"
         signedRuntimePost("$root$path", path, pairingId, body)
         prefs.edit()
@@ -117,6 +141,8 @@ class BridgeService : Service() {
     }
 
     private fun processCommand(root: String, deviceId: String, pairingId: String, command: JSONObject) {
+        require(verifyCommandEnvelope(command, deviceId)) { "Signed command envelope verification failed." }
+
         val commandId = command.optString("commandId")
         val type = command.optString("type")
         val scope = command.optString("capabilityScope")
@@ -174,8 +200,6 @@ class BridgeService : Service() {
 
         val pendingKey = CommandReceiptContract.outboxKey(commandId)
         if (prefs.contains(pendingKey)) {
-            // A local terminal effect already exists and is awaiting delivery.
-            // Never re-run it or overwrite it with a replay rejection.
             return
         }
 
@@ -200,7 +224,7 @@ class BridgeService : Service() {
         }
 
         val masterAutonomy = prefs.getBoolean("master_autonomy", false)
-        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        val emergencyStop = prefs.getBoolean("emergency_stop", true)
         if (!masterAutonomy || emergencyStop) {
             sendResult(root, deviceId, pairingId, commandId, "rejected", "Local safety gate blocked execution.")
             return
@@ -251,6 +275,56 @@ class BridgeService : Service() {
 
         persistPendingResult(outcome)
         deliverPendingResult(root, deviceId, pairingId, outcome)
+    }
+
+    private fun verifyCommandEnvelope(command: JSONObject, expectedDeviceId: String): Boolean {
+        return try {
+            val storedServerKey = prefs.getString("server_public_key", null)?.trim().orEmpty()
+            if (storedServerKey.isBlank()) return false
+            if (command.optString("serverPublicKey") != storedServerKey) return false
+            val storedKeyId = prefs.getString("server_key_id", null)?.trim().orEmpty()
+            if (storedKeyId.isNotBlank() && command.optString("serverKeyId") != storedKeyId) return false
+            if (command.optString("deviceId") != expectedDeviceId) return false
+
+            val signedKeys = listOf(
+                "commandId",
+                "deviceId",
+                "workItemId",
+                "type",
+                "payload",
+                "capabilityScope",
+                "requiredGate",
+                "factoryEvidenceOnly",
+                "factoryContext",
+                "expiresAt",
+                "nonce",
+                "sequence",
+                "cursor",
+                "leaseUntil",
+            )
+            if (signedKeys.any { !command.has(it) }) return false
+            val envelope = JSONObject()
+            for (key in signedKeys) envelope.put(key, command.get(key))
+            val signature = command.optString("envelopeSignature")
+            if (signature.isBlank()) return false
+            verifyServerSignature(storedServerKey, "COMMAND\n${envelope}", signature)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun verifyServerSignature(publicKey: String, message: String, signature: String): Boolean {
+        return try {
+            val key = java.security.KeyFactory.getInstance("Ed25519").generatePublic(
+                java.security.spec.X509EncodedKeySpec(Base64.decode(publicKey, Base64.DEFAULT))
+            )
+            val verifier = Signature.getInstance("Ed25519")
+            verifier.initVerify(key)
+            verifier.update(message.toByteArray(Charsets.UTF_8))
+            verifier.verify(Base64.decode(signature, Base64.DEFAULT))
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun persistPendingResult(result: CommandReceiptContract.PendingResult) {
@@ -443,52 +517,68 @@ class BridgeService : Service() {
     }
 
     private fun signedRuntimeGet(url: String, canonicalPath: String, pairingId: String): JSONObject {
-        val timestamp = (System.currentTimeMillis() / 1000L).toString()
-        val nonce = freshNonce()
-        val cursor = ""
-        val limit = "20"
+        return signedRuntimeRequest("GET", url, canonicalPath, pairingId, "")
+    }
+
+    private fun signedRuntimePost(url: String, canonicalPath: String, pairingId: String, body: String): JSONObject {
+        return signedRuntimeRequest("POST", url, canonicalPath, pairingId, body)
+    }
+
+    private fun signedRuntimeRequest(
+        method: String,
+        url: String,
+        canonicalPath: String,
+        pairingId: String,
+        body: String,
+    ): JSONObject {
+        require(prefs.getString("pairing_id", null) == pairingId) { "Runtime pairing state changed." }
+        val deviceId = prefs.getString("device_id", null)
+            ?: throw IllegalStateException("Missing device id")
+        val origin = ControlPlaneResolver.resolve(prefs.getString("base_url", null))
+        val path = canonicalPath.removePrefix("/api").substringBefore('?')
+        val timestamp = System.currentTimeMillis().toString()
+        val counter = reserveBridgeCounter().toString()
+        val requestId = UUID.randomUUID().toString()
         val canonical = listOf(
-            "PIGA_PHONE_BRIDGE_RUNTIME_V1", "GET", canonicalPath, pairingId,
-            timestamp, nonce, cursor, limit
+            method.uppercase(Locale.ROOT),
+            path,
+            timestamp,
+            counter,
+            requestId,
+            body,
+            origin,
         ).joinToString("\n")
         val signature = sign(canonical)
 
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
+            requestMethod = method
             connectTimeout = 15000
             readTimeout = 15000
+            doOutput = method == "POST"
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("X-PIGA-Bridge-Pairing-Id", pairingId)
-            setRequestProperty("X-PIGA-Bridge-Timestamp", timestamp)
-            setRequestProperty("X-PIGA-Bridge-Nonce", nonce)
-            setRequestProperty("X-PIGA-Bridge-Signature", signature)
+            if (method == "POST") setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("X-PIGA-Device-Id", deviceId)
+            setRequestProperty("X-PIGA-Timestamp", timestamp)
+            setRequestProperty("X-PIGA-Counter", counter)
+            setRequestProperty("X-PIGA-Request-Id", requestId)
+            setRequestProperty("X-PIGA-Signature", signature)
+            setRequestProperty("X-PIGA-Bridge-Version", bridgeContractVersion)
+            setRequestProperty("X-PIGA-Bridge-Version-Code", bridgeContractVersionCode.toString())
+            setRequestProperty("X-PIGA-Control-Plane-Origin", origin)
+        }
+        if (method == "POST") {
+            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
         }
         return readJsonResponse(connection)
     }
 
-    private fun signedRuntimePost(url: String, canonicalPath: String, pairingId: String, body: String): JSONObject {
-        val timestamp = (System.currentTimeMillis() / 1000L).toString()
-        val nonce = freshNonce()
-        val canonical = listOf(
-            "PIGA_PHONE_BRIDGE_RUNTIME_V1", "POST", canonicalPath, pairingId,
-            timestamp, nonce, body
-        ).joinToString("\n")
-        val signature = sign(canonical)
-
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 15000
-            readTimeout = 15000
-            doOutput = true
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("X-PIGA-Bridge-Pairing-Id", pairingId)
-            setRequestProperty("X-PIGA-Bridge-Timestamp", timestamp)
-            setRequestProperty("X-PIGA-Bridge-Nonce", nonce)
-            setRequestProperty("X-PIGA-Bridge-Signature", signature)
+    private fun reserveBridgeCounter(): Long = synchronized(bridgeCounterLock) {
+        val current = prefs.getLong("bridge_counter", 0L)
+        val next = current + 1L
+        require(next > current && prefs.edit().putLong("bridge_counter", next).commit()) {
+            "Unable to persist bridge replay counter."
         }
-        connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        return readJsonResponse(connection)
+        next
     }
 
     private fun readJsonResponse(connection: HttpURLConnection): JSONObject {
@@ -506,10 +596,8 @@ class BridgeService : Service() {
         val signer = Signature.getInstance("SHA256withECDSA")
         signer.initSign(entry.privateKey)
         signer.update(canonical.toByteArray(Charsets.UTF_8))
-        return Base64.encodeToString(signer.sign(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        return Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
     }
-
-    private fun freshNonce(): String = UUID.randomUUID().toString().replace("-", "")
 
     private fun hasNotificationPermission(): Boolean =
         Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
