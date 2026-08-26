@@ -1,8 +1,9 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "contractId": "PIGA_PHONE_ORCHESTRATION_V1",
   "controlPlane": {
     "repository": "mounirakarkach04-pixel/piga-pocket-enterprise",
+    "canonicalOrigin": "https://pigapocket.com",
     "gearboxVersion": "1.6",
     "planner": "OR-Tools CP-SAT",
     "factoryRuntime": "factory/orchestration/factory_core.py",
@@ -12,8 +13,8 @@
   "phoneNode": {
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
     "applicationId": "io.piga.phonebridge.mobile",
-    "minimumCompatibleVersionCode": 18,
-    "minimumCompatibleVersionName": "0.1.17",
+    "minimumCompatibleVersionCode": 19,
+    "minimumCompatibleVersionName": "0.2.0",
     "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier",
     "receiptContract": "io.piga.phonebridge.CommandReceiptContract"
   },
@@ -22,7 +23,13 @@
     "capabilityScope": "pocket.orchestration.verify",
     "payloadRequired": ["plan", "planSha256"],
     "factoryContextOptionalForLegacy": true,
-    "factoryContextWhenPresentRequired": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "expectedCommandId"],
+    "factoryContextWhenPresentRequired": [
+      "jobId",
+      "subjobId",
+      "verifiedPlanHash",
+      "actionSpecHash",
+      "expectedCommandId"
+    ],
     "nonceRequired": true,
     "expiresAtRequired": true,
     "leaseUntilRequired": true
@@ -66,7 +73,10 @@
     "symbolicNumerologyIsNotScientificEvidence": true,
     "scripturalReferenceRequiresProvenanceAndContext": true,
     "creativeNarrativeIsNotFactEvidence": true,
+    "masterAutonomyRequiresExplicitUserEnablement": true,
     "pairedAutonomyPersistsAcrossProcessRestart": true,
-    "emergencyStopDominatesAutonomy": true
+    "emergencyStopDominatesAutonomy": true,
+    "singleLauncherSurface": true,
+    "canonicalControlPlanePinned": true
   }
 }

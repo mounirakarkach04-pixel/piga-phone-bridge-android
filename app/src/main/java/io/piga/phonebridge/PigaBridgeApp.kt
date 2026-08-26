@@ -4,47 +4,47 @@ import android.app.Application
 import android.content.Context
 
 class PigaBridgeApp : Application() {
-    companion object {
-        private const val POCKET_ENTERPRISE_BASE_URL = "https://ee08874a-6e9f-4d86-9942-9371a86f6c3e-00-3myurbngr26bi.janeway.replit.dev"
-        private const val LEGACY_EXECUTOR_HOST = "d62aa607-3fcc-4f10-b437-8dd3326c4f3f-00-1iesyu3mfpkl2.janeway.replit.dev"
-    }
-
     override fun onCreate() {
         super.onCreate()
 
         val prefs = getSharedPreferences("piga_bridge", Context.MODE_PRIVATE)
-
-        // One-time control-plane migration. Preserve the stable device ID and the
-        // Android Keystore key, but never carry a pairing credential across origins.
+        val canonical = ControlPlaneResolver.CANONICAL_CONTROL_PLANE
         val storedBaseUrl = prefs.getString("base_url", null)?.trim()?.removeSuffix("/")
-        val legacyBinding = storedBaseUrl?.contains(LEGACY_EXECUTOR_HOST, ignoreCase = true) == true
-        if (legacyBinding) {
-            prefs.edit()
-                .putString("base_url", POCKET_ENTERPRISE_BASE_URL)
-                .putBoolean("paired", false)
-                .remove("pairing_id")
-                .putString("runtime_status", "REPAIR_REQUIRED_CONTROL_PLANE_MIGRATION")
-                .putString("autonomy_status", "DISARMED_REPAIR_REQUIRED")
-                .putBoolean("master_autonomy", false)
-                .apply()
-        } else if (storedBaseUrl.isNullOrBlank()) {
-            prefs.edit().putString("base_url", POCKET_ENTERPRISE_BASE_URL).apply()
+
+        when {
+            storedBaseUrl.isNullOrBlank() -> {
+                prefs.edit().putString("base_url", canonical).apply()
+            }
+            storedBaseUrl != canonical -> {
+                // A control-plane origin change is material. Pairing authority and
+                // autonomous execution must not cross origins without fresh admission.
+                prefs.edit()
+                    .putString("base_url", canonical)
+                    .putBoolean("paired", false)
+                    .remove("pairing_id")
+                    .putBoolean("master_autonomy", false)
+                    .putString("runtime_status", "REPAIR_REQUIRED_CONTROL_PLANE_REENTRY")
+                    .putString("autonomy_status", "DISARMED_REPAIR_REQUIRED")
+                    .putLong("control_plane_reentry_ms", System.currentTimeMillis())
+                    .apply()
+            }
         }
 
         val paired = prefs.getBoolean("paired", false)
+        val masterAutonomy = prefs.getBoolean("master_autonomy", false)
         val emergencyStop = prefs.getBoolean("emergency_stop", false)
 
-        // User-authorized autonomy mode: once a device is paired, keep the local
-        // autonomy switch enabled across process restarts unless Emergency Stop is active.
-        if (paired && !emergencyStop) {
+        // Master Autonomy is never enabled implicitly. A prior explicit choice may
+        // persist across process restarts, but Emergency Stop always dominates.
+        if (emergencyStop && masterAutonomy) {
             prefs.edit()
-                .putBoolean("master_autonomy", true)
-                .putString("autonomy_status", "ARMED_PAIRED_RECOVERY")
+                .putBoolean("master_autonomy", false)
+                .putString("autonomy_status", "DISARMED_EMERGENCY_STOP")
                 .apply()
         }
 
         BridgeRecoveryScheduler.ensureScheduled(this)
-        if (paired && !emergencyStop) {
+        if (paired && masterAutonomy && !emergencyStop) {
             BridgeRecoveryScheduler.requestRecovery(this)
         }
     }
