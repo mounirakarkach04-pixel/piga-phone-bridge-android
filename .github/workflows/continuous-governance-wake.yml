@@ -60,8 +60,10 @@ jobs:
           payload = json.loads(Path('/tmp/piga-health.json').read_text())
           assert payload.get('schema') == 'piga.control-plane-health.v1'
           assert payload.get('status') in {'ALLOW', 'IDLE', 'HEARTBEAT'}
+          assert payload.get('authority') == 'none'
           assert payload.get('engineCount') == 5
           assert payload.get('additionalEngineCreated') is False
+          assert payload.get('a7semReverseIsEngine') is False
           PY
           echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "reason=HEALTH_ADMITTED" >> "$GITHUB_OUTPUT"
@@ -96,11 +98,14 @@ jobs:
           last='{}'
           while [ "$more" = "true" ] && [ "$cycles" -lt "$max_cycles" ]; do
             cycles=$((cycles + 1))
+            trigger_id="${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${cycles}"
             last="$(curl --fail --silent --show-error --location --max-time 45 \
               -X POST "$ROOT/api/factory/trigger/next" \
               -H "Accept: application/json" \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $OIDC_TOKEN" \
+              -H "X-PIGA-Trigger-Id: $trigger_id" \
+              -H "X-PIGA-Trigger-Event: continuous-governance-wake" \
               -H "X-PIGA-Trigger-Source: github-actions" \
               -H "X-PIGA-Trigger-Repository: $GITHUB_REPOSITORY" \
               --data '{"reason":"continuous-governance-wake","engineCount":5,"createAdditionalEngine":false}')"
@@ -108,7 +113,7 @@ jobs:
             status="$(python -c 'import json,sys; print(json.load(sys.stdin).get("status","UNKNOWN"))' <<<"$last")"
             echo "cycle=$cycles status=$status moreReady=$more"
             case "$status" in
-              PASS|ALLOW|RUNNING|IDLE|HEARTBEAT|DELAY|BLOCK|BLOCKED|UNKNOWN|EXPIRED) ;;
+              PASS|ALLOW|READY|RUNNING|IDLE|HEARTBEAT|DELAY|WAITING|CIRCUIT_OPEN|BLOCK|BLOCKED|UNKNOWN|EXPIRED) ;;
               *) echo "Unexpected trigger status; fail closed" >&2; exit 1;;
             esac
             if [ "$more" = "true" ]; then sleep 1; fi
@@ -142,4 +147,5 @@ jobs:
             echo "- More ready: ${{ steps.drive.outputs.more || 'false' }}"
             echo '- Engine count: 5'
             echo '- Additional engine created: false'
+            echo '- A7SEM Reverse is engine: false'
           } >> "$GITHUB_STEP_SUMMARY"

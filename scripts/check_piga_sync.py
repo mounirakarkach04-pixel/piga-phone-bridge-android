@@ -16,6 +16,7 @@ APP = ROOT / "app/src/main/java/io/piga/phonebridge/PigaBridgeApp.kt"
 MAIN = ROOT / "app/src/main/java/io/piga/phonebridge/MainActivity.kt"
 RESOLVER = ROOT / "app/src/main/java/io/piga/phonebridge/ControlPlaneResolver.kt"
 MANIFEST = ROOT / "app/src/main/AndroidManifest.xml"
+WAKE = ROOT / ".github/workflows/continuous-governance-wake.yml"
 
 
 def main() -> int:
@@ -31,6 +32,7 @@ def main() -> int:
     main = MAIN.read_text(encoding="utf-8")
     resolver = RESOLVER.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
+    wake = WAKE.read_text(encoding="utf-8")
 
     assert contract["controlPlane"]["gearboxVersion"] == "1.6"
     assert contract["controlPlane"]["canonicalOrigin"] == "https://pigapocket.com"
@@ -94,6 +96,19 @@ def main() -> int:
     assert 'android:usesCleartextTraffic="false"' in manifest
     assert manifest.count("android.intent.action.MAIN") == 1
     assert manifest.count("android.intent.category.LAUNCHER") == 1
+
+    assert "id-token: write" in wake
+    assert 'AUDIENCE="piga-pocket-enterprise"' in wake
+    assert '"$ROOT/api/health"' in wake
+    assert "piga.control-plane-health.v1" in wake
+    assert "payload.get('authority') == 'none'" in wake
+    assert "payload.get('engineCount') == 5" in wake
+    assert "payload.get('additionalEngineCreated') is False" in wake
+    assert "payload.get('a7semReverseIsEngine') is False" in wake
+    assert 'trigger_id="${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${cycles}"' in wake
+    assert 'X-PIGA-Trigger-Id: $trigger_id' in wake
+    assert "X-PIGA-Trigger-Event: continuous-governance-wake" in wake
+    assert '"$ROOT/api/factory/trigger/next"' in wake
 
     print("PIGA phone/control-plane market-readiness synchronization v0.2.0: PASS")
     return 0
