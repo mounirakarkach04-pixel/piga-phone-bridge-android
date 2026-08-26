@@ -31,7 +31,7 @@ class BridgeRecoveryPolicyTest {
     }
 
     @Test
-    fun freshHeartbeatIsNoop() {
+    fun freshRuntimeHeartbeatIsNoop() {
         val action = BridgeRecoveryPolicy.decide(
             BridgeRecoveryPolicy.Snapshot(true, true, false, now - 30_000L, now)
         )
@@ -39,7 +39,7 @@ class BridgeRecoveryPolicyTest {
     }
 
     @Test
-    fun staleHeartbeatRequestsRestart() {
+    fun staleRuntimeHeartbeatRequestsRestart() {
         val action = BridgeRecoveryPolicy.decide(
             BridgeRecoveryPolicy.Snapshot(true, true, false, now - BridgeRecoveryPolicy.STALE_AFTER_MS - 1L, now)
         )
@@ -47,7 +47,7 @@ class BridgeRecoveryPolicyTest {
     }
 
     @Test
-    fun missingHeartbeatRequestsRestartWhenAdmitted() {
+    fun missingRuntimeHeartbeatRequestsRestartWhenAdmitted() {
         val action = BridgeRecoveryPolicy.decide(
             BridgeRecoveryPolicy.Snapshot(true, true, false, 0L, now)
         )
