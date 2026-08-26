@@ -5,15 +5,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.IBinder
-import android.speech.tts.TextToSpeech
 import android.util.Base64
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -29,13 +24,9 @@ class BridgeService : Service() {
     private val running = AtomicBoolean(false)
     private val alias = "piga_phone_bridge_device_key"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
-    private val ttsLock = Object()
     private val bridgeCounterLock = Object()
     private val bridgeContractVersion = "0.1.17"
     private val bridgeContractVersionCode = 18
-    @Volatile private var ttsEngine: TextToSpeech? = null
-    @Volatile private var ttsInitialized = false
-    @Volatile private var ttsInitFailed = false
 
     override fun onCreate() {
         super.onCreate()
@@ -50,13 +41,6 @@ class BridgeService : Service() {
 
     override fun onDestroy() {
         running.set(false)
-        synchronized(ttsLock) {
-            ttsEngine?.stop()
-            ttsEngine?.shutdown()
-            ttsEngine = null
-            ttsInitialized = false
-            ttsInitFailed = false
-        }
         super.onDestroy()
     }
 
@@ -77,10 +61,12 @@ class BridgeService : Service() {
                     ?: throw IllegalStateException("Missing pairing id")
 
                 syncSafety(root, deviceId, pairingId)
+                reconcileUncertainEffects()
                 retryPendingResults(root, deviceId, pairingId)
 
                 val canonicalPath = "/api/bridge/devices/$deviceId/commands"
                 val response = signedRuntimeGet("$root$canonicalPath", canonicalPath, pairingId)
+                requirePinnedServerIdentity(response)
                 val commands = response.optJSONArray("commands")
                 val count = commands?.length() ?: 0
                 if (commands != null) {
@@ -114,6 +100,7 @@ class BridgeService : Service() {
         if (!emergencyStop) {
             val path = "/api/bridge/devices/$deviceId/status"
             val status = signedRuntimeGet("$root$path", path, pairingId)
+            requirePinnedServerIdentity(status)
             if (status.optBoolean("emergencyStop", true)) {
                 require(
                     prefs.edit()
@@ -131,9 +118,14 @@ class BridgeService : Service() {
             return
         }
 
-        val body = "{\"masterAutonomy\":$masterAutonomy,\"notificationsGranted\":$notificationPermission,\"emergencyStop\":true}"
+        val body = JSONObject()
+            .put("masterAutonomy", masterAutonomy)
+            .put("notificationsGranted", notificationPermission)
+            .put("emergencyStop", true)
+            .toString()
         val path = "/api/bridge/devices/$deviceId/safety"
-        signedRuntimePost("$root$path", path, pairingId, body)
+        val response = signedRuntimePost("$root$path", path, pairingId, body)
+        requirePinnedServerIdentity(response)
         prefs.edit()
             .putBoolean("notification_permission", notificationPermission)
             .putLong("last_safety_sync_ms", System.currentTimeMillis())
@@ -143,149 +135,401 @@ class BridgeService : Service() {
     private fun processCommand(root: String, deviceId: String, pairingId: String, command: JSONObject) {
         require(verifyCommandEnvelope(command, deviceId)) { "Signed command envelope verification failed." }
 
-        val commandId = command.optString("commandId")
-        val type = command.optString("type")
-        val scope = command.optString("capabilityScope")
-        val commandNonce = command.optString("nonce")
-        val expiresAt = command.optString("expiresAt")
-        val leaseUntil = command.optString("leaseUntil")
+        val commandId = command.optString("commandId").trim()
+        val type = command.optString("type").trim()
+        val scope = command.optString("capabilityScope").trim()
+        val commandNonce = command.optString("nonce").trim()
+        val expiresAt = command.optString("expiresAt").trim()
+        val leaseUntil = command.optString("leaseUntil").trim()
         val payload = command.optJSONObject("payload")
+        val factoryEvidenceOnly = command.optBoolean("factoryEvidenceOnly", false)
 
-        val allowed = mapOf(
-            "local_notification" to "pocket.notification",
-            "clipboard_write" to "pocket.clipboard.write",
-            "url_intent" to "pocket.intent.url",
-            "text_to_speech" to "pocket.tts",
-            "supported_app_launch" to "pocket.app.launch",
-            "share_text" to "pocket.share.text",
-            "orchestration_plan_verify" to "pocket.orchestration.verify"
-        )
-
-        if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
-            if (commandId.isNotBlank()) sendResult(root, deviceId, pairingId, commandId, "rejected", "Command schema or allowlist rejected.")
-            return
-        }
-
-        val factoryCorrelation = try {
-            CommandReceiptContract.parseFactoryCorrelation(
-                commandId,
-                payload.optJSONObject("factoryContext")
-            )
-        } catch (e: IllegalArgumentException) {
-            sendResult(
-                root,
-                deviceId,
-                pairingId,
-                commandId,
-                "rejected",
-                e.message ?: "Factory command correlation rejected."
-            )
-            return
-        }
-
-        if (type == "orchestration_plan_verify" && factoryCorrelation != null) {
-            val planSha256 = payload.optString("planSha256").trim().lowercase(Locale.ROOT)
-            if (planSha256 != factoryCorrelation.verifiedPlanHash) {
-                sendResult(
-                    root,
-                    deviceId,
-                    pairingId,
-                    commandId,
-                    "rejected",
-                    "Factory verifiedPlanHash does not match orchestration plan hash."
-                )
-                return
+        if (
+            commandId.isBlank()
+            || commandNonce.isBlank()
+            || expiresAt.isBlank()
+            || leaseUntil.isBlank()
+            || payload == null
+            || type != "local_notification"
+            || scope != "pocket.notification"
+        ) {
+            if (commandId.isNotBlank()) {
+                rejectDeliveredCommand(root, deviceId, pairingId, commandId, "Command schema or server allowlist rejected.")
             }
+            return
         }
 
-        val pendingKey = CommandReceiptContract.outboxKey(commandId)
-        if (prefs.contains(pendingKey)) {
+        if (factoryEvidenceOnly) {
+            rejectDeliveredCommand(root, deviceId, pairingId, commandId, "Evidence-only command cannot execute a local effect.")
+            return
+        }
+
+        val pendingResultKey = CommandReceiptContract.outboxKey(commandId)
+        if (prefs.contains(pendingResultKey)) return
+
+        val effectKey = CommandReceiptContract.effectIntentKey(commandId)
+        if (prefs.contains(effectKey)) {
+            // Any process restart after authoritative commit is ambiguous. Never replay.
+            persistUnknownResultFromStoredIntent(commandId, commandNonce, effectKey)
             return
         }
 
         if (prefs.getBoolean("command_nonce_$commandNonce", false)) {
-            sendResult(root, deviceId, pairingId, commandId, "rejected", "Command nonce replay rejected.")
+            rejectDeliveredCommand(root, deviceId, pairingId, commandId, "Command nonce replay rejected.")
             return
         }
 
         val now = Instant.now()
         try {
-            if (now.isAfter(Instant.parse(expiresAt))) {
-                sendResult(root, deviceId, pairingId, commandId, "expired", "Command expired before execution.")
-                return
-            }
-            if (now.isAfter(Instant.parse(leaseUntil))) {
-                sendResult(root, deviceId, pairingId, commandId, "expired", "Command lease expired before execution.")
+            if (!Instant.parse(expiresAt).isAfter(now) || !Instant.parse(leaseUntil).isAfter(now)) {
+                rejectDeliveredCommand(root, deviceId, pairingId, commandId, "Command or execution lease expired before acceptance.")
                 return
             }
         } catch (_: Exception) {
-            sendResult(root, deviceId, pairingId, commandId, "rejected", "Invalid expiry or lease timestamp.")
+            rejectDeliveredCommand(root, deviceId, pairingId, commandId, "Invalid command expiry or lease timestamp.")
             return
         }
 
         val masterAutonomy = prefs.getBoolean("master_autonomy", false)
         val emergencyStop = prefs.getBoolean("emergency_stop", true)
-        if (!masterAutonomy || emergencyStop) {
-            sendResult(root, deviceId, pairingId, commandId, "rejected", "Local safety gate blocked execution.")
-            return
-        }
-        if (type == "local_notification" && !hasNotificationPermission()) {
-            sendResult(root, deviceId, pairingId, commandId, "rejected", "Notification permission missing.")
+        if (!masterAutonomy || emergencyStop || !hasNotificationPermission()) {
+            rejectDeliveredCommand(root, deviceId, pairingId, commandId, "Local safety posture or notification permission blocked execution.")
             return
         }
 
-        sendAck(root, deviceId, pairingId, commandId, "accepted")
-        require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {
-            "Unable to persist command nonce before execution."
-        }
+        sendAck(
+            root,
+            deviceId,
+            pairingId,
+            commandId,
+            "accepted",
+            "Local scope, notification permission, device posture, expiry and replay guards revalidated."
+        )
+        sendAck(
+            root,
+            deviceId,
+            pairingId,
+            commandId,
+            "running",
+            "Local execution entered running state under the current server lease."
+        )
 
-        val outcome = try {
-            val detail = when (type) {
-                "local_notification" -> executeNotification(commandId, payload)
-                "clipboard_write" -> executeClipboard(payload)
-                "url_intent" -> executeUrlIntent(payload)
-                "text_to_speech" -> executeTextToSpeech(payload)
-                "supported_app_launch" -> executeAppLaunch(payload)
-                "share_text" -> executeShareText(payload)
-                "orchestration_plan_verify" -> executeOrchestrationPlanVerify(payload)
-                else -> throw IllegalStateException("Unsupported command type")
+        val admission = requestAdmission(root, deviceId, pairingId, commandId, commandNonce, scope)
+        val intent = CommandReceiptContract.EffectIntent(
+            commandId = commandId,
+            commandNonce = commandNonce,
+            effectId = admission.effectId,
+            effectNonce = admission.effectNonce,
+            phase = "intent_written",
+            createdAtMs = System.currentTimeMillis(),
+            factoryEvidenceOnly = false
+        )
+        persistEffectIntent(intent)
+
+        try {
+            revalidateBeforeCommit(admission, expiresAt, leaseUntil)
+            commitEffect(root, deviceId, pairingId, intent, scope)
+            val committed = intent.copy(phase = "execution_started", createdAtMs = System.currentTimeMillis())
+            persistEffectIntent(committed)
+
+            // Persist the command nonce before the local effect. A crash can therefore never replay it.
+            require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {
+                "Unable to persist command nonce before execution."
             }
-            CommandReceiptContract.PendingResult(
+
+            val detail = executeNotification(commandId, payload)
+            val result = CommandReceiptContract.PendingResult(
                 commandId = commandId,
                 commandNonce = commandNonce,
                 status = "succeeded",
                 detail = detail,
                 createdAtMs = System.currentTimeMillis(),
-                jobId = factoryCorrelation?.jobId,
-                subjobId = factoryCorrelation?.subjobId,
-                verifiedPlanHash = factoryCorrelation?.verifiedPlanHash
+                resultCode = "local_allowlist_success",
+                effectBlocked = false,
+                effectId = intent.effectId,
+                effectNonce = intent.effectNonce
             )
+            persistPendingResult(result)
+            clearEffectIntent(commandId)
+            deliverPendingResult(root, deviceId, pairingId, result)
         } catch (e: Exception) {
+            val stored = loadEffectIntent(commandId)
+            val afterCommit = stored?.phase == "execution_started"
+            val status = if (afterCommit) "unknown_requires_review" else "failed"
+            val resultCode = if (afterCommit) "effect_result_ambiguous" else "local_effect_blocked_before_commit"
+            val detail = if (afterCommit) {
+                "Authoritative commit occurred and the local effect may have started; replay is blocked and review is required. ${e.message ?: "unknown failure"}"
+            } else {
+                "Local effect failed closed before authoritative commit completed. ${e.message ?: "unknown failure"}"
+            }
+            if (stored != null) {
+                val result = CommandReceiptContract.PendingResult(
+                    commandId = commandId,
+                    commandNonce = commandNonce,
+                    status = status,
+                    detail = detail,
+                    createdAtMs = System.currentTimeMillis(),
+                    resultCode = resultCode,
+                    effectBlocked = false,
+                    effectId = stored.effectId,
+                    effectNonce = stored.effectNonce
+                )
+                persistPendingResult(result)
+                if (!afterCommit) clearEffectIntent(commandId)
+                deliverPendingResult(root, deviceId, pairingId, result)
+                if (afterCommit) clearEffectIntent(commandId)
+            } else {
+                throw e
+            }
+        }
+    }
+
+    private data class Admission(
+        val effectId: String,
+        val effectNonce: String,
+        val leaseUntil: String,
+        val expiresAt: String,
+    )
+
+    private fun requestAdmission(
+        root: String,
+        deviceId: String,
+        pairingId: String,
+        commandId: String,
+        commandNonce: String,
+        capabilityScope: String,
+    ): Admission {
+        val path = CommandReceiptContract.admissionPath(deviceId, commandId)
+        val response = signedRuntimePost("$root$path", path, pairingId, "{}")
+        requirePinnedServerIdentity(response)
+        val signature = response.optString("admissionSignature")
+        val admission = JSONObject(response.toString()).apply {
+            remove("admissionSignature")
+            remove("serverPublicKey")
+            remove("serverKeyId")
+        }
+        require(verifyPinnedServerSignature("ADMISSION\n$admission", signature)) {
+            "Admission signature verification failed."
+        }
+        require(admission.optString("commandId") == commandId) { "Admission command mismatch." }
+        require(admission.optString("deviceId") == deviceId) { "Admission device mismatch." }
+        require(admission.optString("commandNonce") == commandNonce) { "Admission nonce mismatch." }
+        require(admission.optString("capabilityScope") == capabilityScope) { "Admission scope mismatch." }
+        val effectId = admission.optString("effectId").trim()
+        val effectNonce = admission.optString("effectNonce").trim()
+        val admissionLease = admission.optString("leaseUntil").trim()
+        val admissionExpiry = admission.optString("expiresAt").trim()
+        require(effectId.isNotBlank() && effectNonce.isNotBlank()) { "Admission effect identity missing." }
+        require(Instant.parse(admissionLease).isAfter(Instant.now())) { "Admission lease expired." }
+        require(Instant.parse(admissionExpiry).isAfter(Instant.now())) { "Admission expired." }
+        return Admission(effectId, effectNonce, admissionLease, admissionExpiry)
+    }
+
+    private fun commitEffect(
+        root: String,
+        deviceId: String,
+        pairingId: String,
+        intent: CommandReceiptContract.EffectIntent,
+        capabilityScope: String,
+    ) {
+        val path = CommandReceiptContract.commitPath(deviceId, intent.commandId)
+        val body = JSONObject()
+            .put("effectId", intent.effectId)
+            .put("effectNonce", intent.effectNonce)
+            .toString()
+        val response = signedRuntimePost("$root$path", path, pairingId, body)
+        requirePinnedServerIdentity(response)
+        val signature = response.optString("commitSignature")
+        val commit = JSONObject(response.toString()).apply {
+            remove("commitSignature")
+            remove("serverPublicKey")
+            remove("serverKeyId")
+        }
+        require(verifyPinnedServerSignature("COMMIT\n$commit", signature)) {
+            "Commit signature verification failed."
+        }
+        require(commit.optString("effectId") == intent.effectId) { "Commit effect mismatch." }
+        require(commit.optString("effectNonce") == intent.effectNonce) { "Commit nonce mismatch." }
+        require(commit.optString("commandId") == intent.commandId) { "Commit command mismatch." }
+        require(commit.optString("deviceId") == deviceId) { "Commit device mismatch." }
+        require(commit.optString("capabilityScope") == capabilityScope) { "Commit scope mismatch." }
+        require(Instant.parse(commit.optString("leaseUntil")).isAfter(Instant.now())) { "Commit lease expired." }
+        require(Instant.parse(commit.optString("expiresAt")).isAfter(Instant.now())) { "Commit expired." }
+    }
+
+    private fun revalidateBeforeCommit(admission: Admission, commandExpiresAt: String, commandLeaseUntil: String) {
+        require(!prefs.getBoolean("emergency_stop", true)) { "Emergency Stop became active before commit." }
+        require(prefs.getBoolean("master_autonomy", false)) { "Master Autonomy was disabled before commit." }
+        require(hasNotificationPermission()) { "Notification permission was revoked before commit." }
+        val now = Instant.now()
+        require(Instant.parse(commandExpiresAt).isAfter(now)) { "Command expired before commit." }
+        require(Instant.parse(commandLeaseUntil).isAfter(now)) { "Command lease expired before commit." }
+        require(Instant.parse(admission.expiresAt).isAfter(now)) { "Admission expired before commit." }
+        require(Instant.parse(admission.leaseUntil).isAfter(now)) { "Admission lease expired before commit." }
+    }
+
+    private fun rejectDeliveredCommand(
+        root: String,
+        deviceId: String,
+        pairingId: String,
+        commandId: String,
+        detail: String,
+    ) {
+        try {
+            sendAck(root, deviceId, pairingId, commandId, "rejected", detail)
+        } catch (_: Exception) {
+            // Server remains authoritative. A failed rejection receipt never authorizes execution.
+        }
+    }
+
+    private fun sendAck(
+        root: String,
+        deviceId: String,
+        pairingId: String,
+        commandId: String,
+        status: String,
+        detail: String,
+    ) {
+        val body = JSONObject().put("status", status).put("detail", detail).toString()
+        val path = CommandReceiptContract.ackPath(deviceId, commandId)
+        val response = signedRuntimePost("$root$path", path, pairingId, body)
+        requirePinnedServerIdentity(response)
+    }
+
+    private fun persistEffectIntent(intent: CommandReceiptContract.EffectIntent) {
+        require(
+            prefs.edit().putString(
+                CommandReceiptContract.effectIntentKey(intent.commandId),
+                CommandReceiptContract.encodeEffectIntent(intent)
+            ).commit()
+        ) { "Unable to persist authoritative effect intent." }
+    }
+
+    private fun loadEffectIntent(commandId: String): CommandReceiptContract.EffectIntent? {
+        val raw = prefs.getString(CommandReceiptContract.effectIntentKey(commandId), null) ?: return null
+        return CommandReceiptContract.decodeEffectIntent(raw)
+    }
+
+    private fun clearEffectIntent(commandId: String) {
+        require(prefs.edit().remove(CommandReceiptContract.effectIntentKey(commandId)).commit()) {
+            "Unable to clear completed effect intent."
+        }
+    }
+
+    private fun reconcileUncertainEffects() {
+        val entries = prefs.all.entries.filter { it.key.startsWith("pending_effect_intent_") }
+        for ((key, rawValue) in entries) {
+            val raw = rawValue as? String ?: continue
+            val intent = CommandReceiptContract.decodeEffectIntent(raw) ?: continue
+            if (intent.phase != "execution_started") continue
+            if (prefs.contains(CommandReceiptContract.outboxKey(intent.commandId))) continue
+            val result = CommandReceiptContract.PendingResult(
+                commandId = intent.commandId,
+                commandNonce = intent.commandNonce,
+                status = "unknown_requires_review",
+                detail = "Bridge restarted after authoritative effect commit. Replay is blocked because the local effect outcome cannot be proven.",
+                createdAtMs = System.currentTimeMillis(),
+                resultCode = "effect_result_ambiguous_after_restart",
+                effectBlocked = false,
+                effectId = intent.effectId,
+                effectNonce = intent.effectNonce
+            )
+            persistPendingResult(result)
+            prefs.edit().putBoolean("command_nonce_${intent.commandNonce}", true).commit()
+            // Keep intent until the terminal result is successfully delivered.
+            if (key.isBlank()) throw IllegalStateException("Invalid effect intent key")
+        }
+    }
+
+    private fun persistUnknownResultFromStoredIntent(commandId: String, commandNonce: String, effectKey: String) {
+        val raw = prefs.getString(effectKey, null) ?: return
+        val intent = CommandReceiptContract.decodeEffectIntent(raw) ?: return
+        if (intent.phase != "execution_started") return
+        if (prefs.contains(CommandReceiptContract.outboxKey(commandId))) return
+        persistPendingResult(
             CommandReceiptContract.PendingResult(
                 commandId = commandId,
                 commandNonce = commandNonce,
-                status = "failed",
-                detail = e.message ?: "Local capability failed.",
+                status = "unknown_requires_review",
+                detail = "A committed effect already exists locally. Replay was denied and operator review is required.",
                 createdAtMs = System.currentTimeMillis(),
-                jobId = factoryCorrelation?.jobId,
-                subjobId = factoryCorrelation?.subjobId,
-                verifiedPlanHash = factoryCorrelation?.verifiedPlanHash
+                resultCode = "effect_replay_blocked",
+                effectBlocked = false,
+                effectId = intent.effectId,
+                effectNonce = intent.effectNonce
             )
-        }
+        )
+        prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()
+    }
 
-        persistPendingResult(outcome)
-        deliverPendingResult(root, deviceId, pairingId, outcome)
+    private fun persistPendingResult(result: CommandReceiptContract.PendingResult) {
+        require(result.effectId != null && result.effectNonce != null && result.resultCode != null) {
+            "Authoritative effect result tokens are required."
+        }
+        val key = CommandReceiptContract.outboxKey(result.commandId)
+        val encoded = CommandReceiptContract.encodePendingResult(result)
+        require(prefs.edit().putString(key, encoded).commit()) {
+            "Unable to persist terminal command result."
+        }
+    }
+
+    private fun retryPendingResults(root: String, deviceId: String, pairingId: String) {
+        val pending = prefs.all.entries
+            .filter { it.key.startsWith("pending_command_result_") }
+            .sortedBy { it.key }
+
+        for ((key, raw) in pending) {
+            val encoded = raw as? String
+                ?: throw IllegalStateException("Pending result outbox entry invalid: $key")
+            val result = CommandReceiptContract.decodePendingResult(encoded)
+                ?: throw IllegalStateException("Pending result outbox decode failed: $key")
+            // Legacy result records have no authoritative effect token and cannot be replayed safely.
+            if (result.effectId == null || result.effectNonce == null || result.resultCode == null) continue
+            deliverPendingResult(root, deviceId, pairingId, result)
+        }
+    }
+
+    private fun deliverPendingResult(
+        root: String,
+        deviceId: String,
+        pairingId: String,
+        result: CommandReceiptContract.PendingResult,
+    ) {
+        val effectId = requireNotNull(result.effectId)
+        val effectNonce = requireNotNull(result.effectNonce)
+        val resultCode = requireNotNull(result.resultCode)
+        val body = JSONObject()
+            .put("status", result.status)
+            .put("resultCode", resultCode)
+            .put("detail", result.detail)
+            .put("effectBlocked", result.effectBlocked)
+            .put("effectId", effectId)
+            .put("effectNonce", effectNonce)
+            .toString()
+        val path = CommandReceiptContract.resultPath(deviceId, result.commandId)
+        val response = signedRuntimePost("$root$path", path, pairingId, body)
+        requirePinnedServerIdentity(response)
+        require(prefs.edit().remove(CommandReceiptContract.outboxKey(result.commandId)).commit()) {
+            "Result delivered but local outbox cleanup failed."
+        }
+        val intentKey = CommandReceiptContract.effectIntentKey(result.commandId)
+        if (prefs.contains(intentKey)) {
+            require(prefs.edit().remove(intentKey).commit()) { "Unable to clear delivered effect intent." }
+        }
+    }
+
+    private fun executeNotification(commandId: String, payload: JSONObject): String {
+        val title = payload.optString("title").trim()
+        val body = payload.optString("body").trim()
+        require(title.isNotBlank() && body.isNotBlank()) { "Notification payload invalid." }
+        showLocalNotification(commandId, title, body)
+        return "Benachrichtigung lokal ausgeführt."
     }
 
     private fun verifyCommandEnvelope(command: JSONObject, expectedDeviceId: String): Boolean {
         return try {
-            val storedServerKey = prefs.getString("server_public_key", null)?.trim().orEmpty()
-            if (storedServerKey.isBlank()) return false
-            if (command.optString("serverPublicKey") != storedServerKey) return false
-            val storedKeyId = prefs.getString("server_key_id", null)?.trim().orEmpty()
-            if (storedKeyId.isNotBlank() && command.optString("serverKeyId") != storedKeyId) return false
+            requirePinnedServerIdentity(command)
             if (command.optString("deviceId") != expectedDeviceId) return false
-
             val signedKeys = listOf(
                 "commandId",
                 "deviceId",
@@ -306,14 +550,25 @@ class BridgeService : Service() {
             val envelope = JSONObject()
             for (key in signedKeys) envelope.put(key, command.get(key))
             val signature = command.optString("envelopeSignature")
-            if (signature.isBlank()) return false
-            verifyServerSignature(storedServerKey, "COMMAND\n${envelope}", signature)
+            signature.isNotBlank() && verifyPinnedServerSignature("COMMAND\n$envelope", signature)
         } catch (_: Exception) {
             false
         }
     }
 
-    private fun verifyServerSignature(publicKey: String, message: String, signature: String): Boolean {
+    private fun requirePinnedServerIdentity(response: JSONObject) {
+        val pinnedKey = prefs.getString("server_public_key", null)?.trim().orEmpty()
+        require(pinnedKey.isNotBlank()) { "Pinned server public key is unavailable." }
+        require(response.optString("serverPublicKey") == pinnedKey) { "Server public key changed; re-pairing is required." }
+        val pinnedId = prefs.getString("server_key_id", null)?.trim().orEmpty()
+        if (pinnedId.isNotBlank()) {
+            require(response.optString("serverKeyId") == pinnedId) { "Server key id changed; re-pairing is required." }
+        }
+    }
+
+    private fun verifyPinnedServerSignature(message: String, signature: String): Boolean {
+        val publicKey = prefs.getString("server_public_key", null)?.trim().orEmpty()
+        if (publicKey.isBlank() || signature.isBlank()) return false
         return try {
             val key = java.security.KeyFactory.getInstance("Ed25519").generatePublic(
                 java.security.spec.X509EncodedKeySpec(Base64.decode(publicKey, Base64.DEFAULT))
@@ -327,202 +582,11 @@ class BridgeService : Service() {
         }
     }
 
-    private fun persistPendingResult(result: CommandReceiptContract.PendingResult) {
-        val key = CommandReceiptContract.outboxKey(result.commandId)
-        val encoded = CommandReceiptContract.encodePendingResult(result)
-        require(prefs.edit().putString(key, encoded).commit()) {
-            "Unable to persist terminal command result."
-        }
-    }
+    private fun signedRuntimeGet(url: String, canonicalPath: String, pairingId: String): JSONObject =
+        signedRuntimeRequest("GET", url, canonicalPath, pairingId, "")
 
-    private fun retryPendingResults(root: String, deviceId: String, pairingId: String) {
-        val pending = prefs.all.entries
-            .filter { it.key.startsWith("pending_command_result_") }
-            .sortedBy { it.key }
-
-        for ((key, raw) in pending) {
-            val encoded = raw as? String
-                ?: throw IllegalStateException("Pending result outbox entry invalid: $key")
-            val result = CommandReceiptContract.decodePendingResult(encoded)
-                ?: throw IllegalStateException("Pending result outbox decode failed: $key")
-            deliverPendingResult(root, deviceId, pairingId, result)
-        }
-    }
-
-    private fun deliverPendingResult(
-        root: String,
-        deviceId: String,
-        pairingId: String,
-        result: CommandReceiptContract.PendingResult
-    ) {
-        sendResultDirect(
-            root,
-            deviceId,
-            pairingId,
-            result.commandId,
-            result.status,
-            result.detail,
-            result.jobId,
-            result.subjobId,
-            result.verifiedPlanHash
-        )
-        val key = CommandReceiptContract.outboxKey(result.commandId)
-        require(prefs.edit().remove(key).commit()) {
-            "Result delivered but local outbox cleanup failed."
-        }
-    }
-
-    private fun executeNotification(commandId: String, payload: JSONObject): String {
-        val title = payload.optString("title").trim()
-        val body = payload.optString("body").trim()
-        require(title.isNotBlank() && body.isNotBlank()) { "Notification payload invalid." }
-        showLocalNotification(commandId, title, body)
-        return "Benachrichtigung lokal ausgeführt."
-    }
-
-    private fun executeClipboard(payload: JSONObject): String {
-        val text = payload.optString("text")
-        require(text.isNotBlank() && text.length <= 10000) { "Clipboard payload invalid." }
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("PIGA Pocket Enterprise", text))
-        return "Clipboard lokal aktualisiert."
-    }
-
-    private fun executeUrlIntent(payload: JSONObject): String {
-        val raw = payload.optString("url").trim()
-        require(raw.length in 1..2048) { "URL payload invalid." }
-        val uri = Uri.parse(raw)
-        val scheme = uri.scheme?.lowercase(Locale.ROOT)
-        require(scheme == "https" || scheme == "http") { "Only http/https URL intents are admitted." }
-        val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        require(intent.resolveActivity(packageManager) != null) { "No handler available for URL." }
-        startActivity(intent)
-        return "URL/Deep-Link Intent geöffnet."
-    }
-
-    private fun executeTextToSpeech(payload: JSONObject): String {
-        val text = payload.optString("text").trim()
-        require(text.isNotBlank() && text.length <= 4000) { "TTS payload invalid." }
-
-        val engine = synchronized(ttsLock) {
-            if (ttsEngine == null) {
-                ttsInitialized = false
-                ttsInitFailed = false
-                ttsEngine = TextToSpeech(applicationContext) { status ->
-                    synchronized(ttsLock) {
-                        ttsInitialized = status == TextToSpeech.SUCCESS
-                        ttsInitFailed = status != TextToSpeech.SUCCESS
-                        ttsLock.notifyAll()
-                    }
-                }
-            }
-
-            val deadline = System.currentTimeMillis() + 5000L
-            while (!ttsInitialized && !ttsInitFailed) {
-                val remaining = deadline - System.currentTimeMillis()
-                if (remaining <= 0L) break
-                ttsLock.wait(remaining)
-            }
-
-            if (!ttsInitialized) {
-                ttsEngine?.shutdown()
-                ttsEngine = null
-                ttsInitFailed = false
-                throw IllegalStateException("Text-to-speech engine unavailable.")
-            }
-            ttsEngine ?: throw IllegalStateException("Text-to-speech engine unavailable.")
-        }
-
-        engine.language = Locale.getDefault()
-        val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "piga-${UUID.randomUUID()}")
-        require(result != TextToSpeech.ERROR) { "Text-to-speech failed." }
-        return "Text-to-Speech lokal angestoßen."
-    }
-
-    private fun executeAppLaunch(payload: JSONObject): String {
-        val packageName = payload.optString("packageName").trim()
-        require(packageName.matches(Regex("^[A-Za-z0-9_.]{3,200}$"))) { "Package name invalid." }
-        val launch = packageManager.getLaunchIntentForPackage(packageName)
-            ?: throw IllegalStateException("App not installed or not launchable.")
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(launch)
-        return "Unterstützte App gestartet."
-    }
-
-    private fun executeShareText(payload: JSONObject): String {
-        val text = payload.optString("text").trim()
-        require(text.isNotBlank() && text.length <= 10000) { "Share payload invalid." }
-        val targetPackage = payload.optString("packageName").trim()
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, text)
-            if (targetPackage.isNotBlank()) setPackage(targetPackage)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        require(send.resolveActivity(packageManager) != null) { "No admitted share target available." }
-        startActivity(send)
-        return if (targetPackage.isBlank()) "Share-Intent geöffnet." else "Share-Intent an Ziel-App geöffnet."
-    }
-
-    private fun executeOrchestrationPlanVerify(payload: JSONObject): String {
-        val plan = payload.optJSONObject("plan")
-            ?: throw IllegalArgumentException("Orchestration plan missing.")
-        val expectedSha256 = payload.optString("planSha256").trim().lowercase(Locale.ROOT)
-        require(expectedSha256.matches(Regex("^[0-9a-f]{64}$"))) { "Expected plan SHA-256 missing or invalid." }
-
-        val result = OrchestrationPlanVerifier.verify(plan)
-        require(result.planSha256 == expectedSha256) { "Orchestration plan SHA-256 mismatch." }
-        require(result.admitted) { "Orchestration plan blocked: ${result.reason}" }
-
-        val receipt = OrchestrationPlanVerifier.receiptJson(result).apply {
-            put("expectedPlanSha256", expectedSha256)
-            put("hashMatched", true)
-            put("capabilityScope", "pocket.orchestration.verify")
-        }
-        return receipt.toString()
-    }
-
-    private fun sendAck(root: String, deviceId: String, pairingId: String, commandId: String, status: String) {
-        val body = "{\"status\":\"$status\"}"
-        val canonicalPath = CommandReceiptContract.ackPath(deviceId, commandId)
-        signedRuntimePost("$root$canonicalPath", canonicalPath, pairingId, body)
-    }
-
-    private fun sendResult(root: String, deviceId: String, pairingId: String, commandId: String, status: String, detail: String) {
-        sendResultDirect(root, deviceId, pairingId, commandId, status, detail)
-    }
-
-    private fun sendResultDirect(
-        root: String,
-        deviceId: String,
-        pairingId: String,
-        commandId: String,
-        status: String,
-        detail: String,
-        jobId: String? = null,
-        subjobId: String? = null,
-        verifiedPlanHash: String? = null
-    ) {
-        val bodyJson = JSONObject()
-            .put("status", status)
-            .put("detail", detail)
-            .put("commandId", commandId)
-        if (!jobId.isNullOrBlank()) bodyJson.put("jobId", jobId)
-        if (!subjobId.isNullOrBlank()) bodyJson.put("subjobId", subjobId)
-        if (!verifiedPlanHash.isNullOrBlank()) bodyJson.put("verifiedPlanHash", verifiedPlanHash)
-
-        val body = bodyJson.toString()
-        val canonicalPath = CommandReceiptContract.resultPath(deviceId, commandId)
-        signedRuntimePost("$root$canonicalPath", canonicalPath, pairingId, body)
-    }
-
-    private fun signedRuntimeGet(url: String, canonicalPath: String, pairingId: String): JSONObject {
-        return signedRuntimeRequest("GET", url, canonicalPath, pairingId, "")
-    }
-
-    private fun signedRuntimePost(url: String, canonicalPath: String, pairingId: String, body: String): JSONObject {
-        return signedRuntimeRequest("POST", url, canonicalPath, pairingId, body)
-    }
+    private fun signedRuntimePost(url: String, canonicalPath: String, pairingId: String, body: String): JSONObject =
+        signedRuntimeRequest("POST", url, canonicalPath, pairingId, body)
 
     private fun signedRuntimeRequest(
         method: String,
@@ -586,7 +650,7 @@ class BridgeService : Service() {
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
         connection.disconnect()
-        if (code !in 200..299) throw IllegalStateException("HTTP $code ${text.take(180)}")
+        if (code !in 200..299) throw IllegalStateException("HTTP $code ${text.take(240)}")
         return if (text.isBlank()) JSONObject() else JSONObject(text)
     }
 
