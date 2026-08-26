@@ -1,7 +1,7 @@
 package io.piga.phonebridge
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFailsWith
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class BridgeRuntimeRequestContractTest {
@@ -27,7 +27,7 @@ class BridgeRuntimeRequestContractTest {
     fun counter_is_monotonic_and_server_safe() {
         assertEquals(1L, BridgeRuntimeRequestContract.nextCounter(0L))
         assertEquals(42L, BridgeRuntimeRequestContract.nextCounter(41L))
-        assertFailsWith<IllegalArgumentException> {
+        assertThrows(IllegalArgumentException::class.java) {
             BridgeRuntimeRequestContract.nextCounter(9_007_199_254_740_991L)
         }
     }
