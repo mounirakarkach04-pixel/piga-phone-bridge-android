@@ -12,14 +12,20 @@ class BridgeRecoveryWorker(
 ) : Worker(appContext, params) {
     override fun doWork(): Result {
         val prefs = applicationContext.getSharedPreferences("piga_bridge", Context.MODE_PRIVATE)
-        val paired = prefs.getBoolean("paired", false)
-        val master = prefs.getBoolean("master_autonomy", false)
-        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        val now = System.currentTimeMillis()
+        val snapshot = BridgeRecoveryPolicy.Snapshot(
+            paired = prefs.getBoolean("paired", false),
+            masterAutonomy = prefs.getBoolean("master_autonomy", false),
+            emergencyStop = prefs.getBoolean("emergency_stop", false),
+            lastPollMs = prefs.getLong("last_poll_ms", 0L),
+            nowMs = now
+        )
+        val action = BridgeRecoveryPolicy.decide(snapshot)
 
-        if (!paired || !master || emergencyStop) {
+        if (action != BridgeRecoveryPolicy.Action.RESTART_STALE_RUNTIME) {
             prefs.edit()
-                .putString("recovery_status", "SKIPPED paired=$paired master=$master emergencyStop=$emergencyStop")
-                .putLong("last_recovery_ms", System.currentTimeMillis())
+                .putString("recovery_status", action.name)
+                .putLong("last_recovery_ms", now)
                 .apply()
             return Result.success()
         }
@@ -32,7 +38,7 @@ class BridgeRecoveryWorker(
                     prefs.edit()
                         .putString("base_url", canonicalRoot)
                         .putString("recovery_status", "CONTROL_PLANE_REENTRY")
-                        .putLong("control_plane_reentry_ms", System.currentTimeMillis())
+                        .putLong("control_plane_reentry_ms", now)
                         .commit()
                 ) { "Unable to persist canonical control-plane re-entry" }
             }
@@ -44,15 +50,16 @@ class BridgeRecoveryWorker(
                 applicationContext.startService(intent)
             }
             prefs.edit()
-                .putString("recovery_status", "BRIDGE_RESTART_REQUESTED")
-                .putLong("last_recovery_ms", System.currentTimeMillis())
+                .putString("recovery_status", "BRIDGE_RESTART_REQUESTED_STALE_HEARTBEAT")
+                .putLong("last_recovery_ms", now)
+                .putLong("recovery_restart_count", prefs.getLong("recovery_restart_count", 0L) + 1L)
                 .apply()
             Result.success()
         } catch (t: Throwable) {
-            // Fail closed. Discovery/runtime recovery is retried by WorkManager.
             prefs.edit()
-                .putString("recovery_status", "DEFERRED ${t.javaClass.simpleName}")
-                .putLong("last_recovery_ms", System.currentTimeMillis())
+                .putString("recovery_status", "DEFERRED_${t.javaClass.simpleName}")
+                .putLong("last_recovery_ms", now)
+                .putLong("recovery_failure_count", prefs.getLong("recovery_failure_count", 0L) + 1L)
                 .apply()
             Result.retry()
         }
