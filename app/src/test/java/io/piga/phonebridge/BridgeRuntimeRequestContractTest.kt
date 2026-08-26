@@ -24,6 +24,17 @@ class BridgeRuntimeRequestContractTest {
     }
 
     @Test
+    fun canonical_path_strips_only_the_api_mount() {
+        assertEquals(
+            "/bridge/devices/device-1/commands",
+            BridgeRuntimeRequestContract.canonicalPath("/api/bridge/devices/device-1/commands"),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            BridgeRuntimeRequestContract.canonicalPath("/bridge/devices/device-1/commands")
+        }
+    }
+
+    @Test
     fun counter_is_monotonic_and_server_safe() {
         assertEquals(1L, BridgeRuntimeRequestContract.nextCounter(0L))
         assertEquals(42L, BridgeRuntimeRequestContract.nextCounter(41L))
