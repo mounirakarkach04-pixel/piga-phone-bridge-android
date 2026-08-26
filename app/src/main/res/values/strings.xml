@@ -1,7 +1,0 @@
-<resources>
-    <string name="app_name">PIGA Pocket Enterprise</string>
-    <string name="pairing_title">PIGA Device Pairing</string>
-    <string name="diagnostics_title">PIGA Capability Diagnostics</string>
-    <string name="runtime_channel_name">PIGA Governed Runtime</string>
-    <string name="commands_channel_name">PIGA Local Commands</string>
-</resources>

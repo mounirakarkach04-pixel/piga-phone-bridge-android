@@ -1,1 +1,0 @@
-Trigger Android Debug APK build from current main for the runtime-proof contract verification on 2026-08-24 11:52 CEST.
