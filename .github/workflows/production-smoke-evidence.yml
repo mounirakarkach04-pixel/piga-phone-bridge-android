@@ -1,0 +1,135 @@
+name: PIGA Production Smoke Evidence
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: piga-production-smoke-evidence
+  cancel-in-progress: true
+
+jobs:
+  verify-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Probe public edge and control plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+
+          curl --fail --silent --show-error --location --max-time 20 \
+            -D evidence/root.headers \
+            https://pigapocket.com/ \
+            -o evidence/root.html
+
+          curl --fail --silent --show-error --location --max-time 20 \
+            https://pigapocket.com/healthz \
+            -o evidence/edge-health.json
+
+          curl --fail --silent --show-error --location --max-time 20 \
+            https://pigapocket.com/api/health \
+            -o evidence/control-plane-health.json
+
+          trigger_code="$(curl --silent --show-error --location --max-time 20 \
+            -X POST https://pigapocket.com/api/factory/trigger/next \
+            -H 'Accept: application/json' \
+            -H 'Content-Type: application/json' \
+            --data '{"reason":"unauthorized-production-smoke"}' \
+            -o evidence/unauthorized-trigger.json \
+            -w '%{http_code}')"
+          test "$trigger_code" = "401"
+          printf '%s\n' "$trigger_code" > evidence/unauthorized-trigger.status
+
+      - name: Verify fail-closed production invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root_headers = Path('evidence/root.headers').read_text(errors='replace')
+          root_html = Path('evidence/root.html').read_bytes()
+          edge = json.loads(Path('evidence/edge-health.json').read_text())
+          control = json.loads(Path('evidence/control-plane-health.json').read_text())
+          unauthorized = json.loads(Path('evidence/unauthorized-trigger.json').read_text())
+
+          def require_header(name: str, expected: str | None = None) -> str:
+              match = re.search(rf'(?im)^{re.escape(name)}:\s*([^\r\n]+)', root_headers)
+              assert match, f'MISSING_HEADER:{name}'
+              value = match.group(1).strip()
+              if expected is not None:
+                  assert value.lower() == expected.lower(), (name, value)
+              return value
+
+          require_header('strict-transport-security')
+          require_header('x-content-type-options', 'nosniff')
+          require_header('x-frame-options', 'DENY')
+          require_header('x-piga-edge', 'governed')
+          require_header('content-security-policy')
+          assert b'<html' in root_html.lower(), 'ROOT_HTML_MISSING'
+          assert b'piga' in root_html.lower(), 'PIGA_MARKER_MISSING'
+
+          assert edge.get('status') == 'ok', edge
+          assert edge.get('apiConfigured') is True, edge
+          assert control.get('schema') == 'piga.control-plane-health.v1', control
+          assert control.get('status') in {'ALLOW', 'IDLE', 'HEARTBEAT'}, control
+          assert control.get('authority') == 'none', control
+          assert control.get('engineCount') == 5, control
+          assert control.get('additionalEngineCreated') is False, control
+          assert control.get('a7semReverseIsEngine') is False, control
+          assert Path('evidence/unauthorized-trigger.status').read_text().strip() == '401'
+          assert 'error' in unauthorized, unauthorized
+
+          receipt = {
+              'schema': 'piga.production-smoke-receipt.v1',
+              'result': 'PASS',
+              'verifiedAt': datetime.now(timezone.utc).isoformat(),
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'workflowRunId': os.environ['GITHUB_RUN_ID'],
+              'workflowRunAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'edge': {
+                  'url': 'https://pigapocket.com',
+                  'rootSha256': hashlib.sha256(root_html).hexdigest(),
+                  'status': edge.get('status'),
+                  'apiConfigured': edge.get('apiConfigured'),
+              },
+              'controlPlane': {
+                  'schema': control.get('schema'),
+                  'status': control.get('status'),
+                  'authority': control.get('authority'),
+                  'engineCount': control.get('engineCount'),
+                  'additionalEngineCreated': control.get('additionalEngineCreated'),
+                  'a7semReverseIsEngine': control.get('a7semReverseIsEngine'),
+              },
+              'unauthorizedMutationRejected': True,
+              'publicationAuthorized': False,
+          }
+          Path('evidence/production-smoke-receipt.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(receipt, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload production verification receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-production-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
