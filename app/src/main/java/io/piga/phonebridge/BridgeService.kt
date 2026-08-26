@@ -25,8 +25,8 @@ class BridgeService : Service() {
     private val alias = "piga_phone_bridge_device_key"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private val bridgeCounterLock = Object()
-    private val bridgeContractVersion = "0.1.17"
-    private val bridgeContractVersionCode = 18
+    private val bridgeContractVersion = "0.2.0"
+    private val bridgeContractVersionCode = 19
 
     override fun onCreate() {
         super.onCreate()
