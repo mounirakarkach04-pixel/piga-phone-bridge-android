@@ -62,6 +62,8 @@ jobs:
           probe_get healthz "$CANDIDATE_ORIGIN/api/healthz"
           # Deliberately invalid input: exercises route identity without creating a pairing ceremony.
           probe_post_json pairing_invalid "$CANDIDATE_ORIGIN/api/bridge/pairing/challenge" '{}'
+          # Still deliberately invalid device identity; this only reveals the legacy capabilities schema.
+          probe_post_json pairing_schema "$CANDIDATE_ORIGIN/api/bridge/pairing/challenge" '{"deviceId":"x","publicKey":"x","capabilities":{}}'
 
           python - <<'PY'
           import json
@@ -81,11 +83,11 @@ jobs:
                   return None
 
           health_status = read('healthz', 'status')
-          health_body = read('healthz', 'body')
+          health = parse_json(read('healthz', 'body'))
           challenge_status = read('pairing_invalid', 'status')
-          challenge_body = read('pairing_invalid', 'body')
-          health = parse_json(health_body)
-          challenge = parse_json(challenge_body)
+          challenge = parse_json(read('pairing_invalid', 'body'))
+          schema_status = read('pairing_schema', 'status')
+          schema = parse_json(read('pairing_schema', 'body'))
 
           enterprise_fingerprint = bool(
               health_status == '200'
@@ -113,9 +115,14 @@ jobs:
                   'curlExitCode': read('pairing_invalid', 'curl_rc'),
                   'json': challenge,
               },
+              'legacySchemaProbe': {
+                  'httpStatus': schema_status,
+                  'curlExitCode': read('pairing_schema', 'curl_rc'),
+                  'json': schema,
+              },
               'enterpriseApiFingerprint': enterprise_fingerprint,
               'authorityGranted': False,
-              'note': 'Diagnostic only. No valid pairing identity was submitted and no production binding was changed.',
+              'note': 'Diagnostic only. Every pairing probe is intentionally invalid before persistence and no production binding was changed.',
           }
           (root / 'report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
           print(json.dumps(report, indent=2, sort_keys=True))
