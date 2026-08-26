@@ -30,8 +30,16 @@
 
         <activity
             android:name=".PairingActivity"
-            android:exported="false"
-            android:label="@string/pairing_title" />
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="@string/pairing_title">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="piga" android:host="pair" />
+            </intent-filter>
+        </activity>
 
         <activity
             android:name=".LocalDiagnosticsActivity"
