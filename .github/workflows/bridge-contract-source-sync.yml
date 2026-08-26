@@ -1,0 +1,47 @@
+name: Bridge Contract Source Sync
+
+on:
+  push:
+    branches: ["codex/frictionless-pairing-20260826"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Align runtime contract with app version
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/java/io/piga/phonebridge/BridgeService.kt')
+          text = path.read_text()
+          text = text.replace('private val bridgeContractVersion = "0.1.17"', 'private val bridgeContractVersion = "0.2.0"')
+          text = text.replace('private val bridgeContractVersionCode = 18', 'private val bridgeContractVersionCode = 19')
+          path.write_text(text)
+          assert 'private val bridgeContractVersion = "0.2.0"' in text
+          assert 'private val bridgeContractVersionCode = 19' in text
+          gradle = Path('app/build.gradle.kts').read_text()
+          assert 'versionName = "0.2.0"' in gradle
+          assert 'versionCode = 19' in gradle
+          PY
+
+      - name: Commit synchronized source when needed
+        run: |
+          if git diff --quiet -- app/src/main/java/io/piga/phonebridge/BridgeService.kt; then
+            echo "Bridge runtime contract source already synchronized."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          git commit -m "Align Android runtime contract with 0.2.0"
+          git push origin HEAD:codex/frictionless-pairing-20260826

@@ -1,15 +1,21 @@
 package io.piga.phonebridge
 
 /**
- * Pure contract helpers for the command ACK/result lifecycle.
+ * Pure contract helpers for the command ACK/effect/result lifecycle.
  *
- * Factory correlation is carried end-to-end when present, while decode remains
- * compatible with the older five-field pending-result format so an app update
- * cannot strand an existing local outbox entry.
+ * Factory correlation and authoritative effect tokens are carried end-to-end.
+ * Decode remains compatible with the older five-field and eight-field pending
+ * result formats so an app update cannot strand an existing local outbox entry.
  */
 object CommandReceiptContract {
     fun ackPath(deviceId: String, commandId: String): String =
         "/api/bridge/devices/$deviceId/commands/$commandId/ack"
+
+    fun admissionPath(deviceId: String, commandId: String): String =
+        "/api/bridge/devices/$deviceId/commands/$commandId/admission"
+
+    fun commitPath(deviceId: String, commandId: String): String =
+        "/api/bridge/devices/$deviceId/commands/$commandId/admission/commit"
 
     fun resultPath(deviceId: String, commandId: String): String =
         "/api/bridge/devices/$deviceId/commands/$commandId/result"
@@ -22,6 +28,16 @@ object CommandReceiptContract {
         val expectedCommandId: String
     )
 
+    data class EffectIntent(
+        val commandId: String,
+        val commandNonce: String,
+        val effectId: String,
+        val effectNonce: String,
+        val phase: String,
+        val createdAtMs: Long,
+        val factoryEvidenceOnly: Boolean = false
+    )
+
     data class PendingResult(
         val commandId: String,
         val commandNonce: String,
@@ -30,10 +46,43 @@ object CommandReceiptContract {
         val createdAtMs: Long,
         val jobId: String? = null,
         val subjobId: String? = null,
-        val verifiedPlanHash: String? = null
+        val verifiedPlanHash: String? = null,
+        val resultCode: String? = null,
+        val effectBlocked: Boolean = false,
+        val effectId: String? = null,
+        val effectNonce: String? = null
     )
 
+    fun effectIntentKey(commandId: String) = "pending_effect_intent_$commandId"
+
     fun outboxKey(commandId: String): String = "pending_command_result_$commandId"
+
+    fun encodeEffectIntent(intent: EffectIntent): String = listOf(
+        intent.commandId,
+        intent.commandNonce,
+        intent.effectId,
+        intent.effectNonce,
+        intent.phase,
+        intent.createdAtMs.toString(),
+        intent.factoryEvidenceOnly.toString()
+    ).joinToString("\n") { escape(it) }
+
+    fun decodeEffectIntent(encoded: String): EffectIntent? {
+        val parts = splitEscaped(encoded)
+        if (parts.size != 7) return null
+        val createdAt = parts[5].toLongOrNull() ?: return null
+        val evidenceOnly = parts[6].toBooleanStrictOrNull() ?: return null
+        if (parts.take(5).any { it.isBlank() }) return null
+        return EffectIntent(
+            commandId = parts[0],
+            commandNonce = parts[1],
+            effectId = parts[2],
+            effectNonce = parts[3],
+            phase = parts[4],
+            createdAtMs = createdAt,
+            factoryEvidenceOnly = evidenceOnly
+        )
+    }
 
     fun encodePendingResult(result: PendingResult): String = listOf(
         result.commandId,
@@ -43,6 +92,10 @@ object CommandReceiptContract {
         result.jobId.orEmpty(),
         result.subjobId.orEmpty(),
         result.verifiedPlanHash.orEmpty(),
+        result.resultCode.orEmpty(),
+        result.effectBlocked.toString(),
+        result.effectId.orEmpty(),
+        result.effectNonce.orEmpty(),
         result.detail
     ).joinToString("\n") { escape(it) }
 
@@ -71,6 +124,25 @@ object CommandReceiptContract {
                     subjobId = parts[5].ifBlank { null },
                     verifiedPlanHash = parts[6].ifBlank { null },
                     detail = parts[7]
+                )
+            }
+
+            12 -> {
+                val createdAt = parts[3].toLongOrNull() ?: return null
+                val effectBlocked = parts[8].toBooleanStrictOrNull() ?: return null
+                PendingResult(
+                    commandId = parts[0],
+                    commandNonce = parts[1],
+                    status = parts[2],
+                    createdAtMs = createdAt,
+                    jobId = parts[4].ifBlank { null },
+                    subjobId = parts[5].ifBlank { null },
+                    verifiedPlanHash = parts[6].ifBlank { null },
+                    resultCode = parts[7].ifBlank { null },
+                    effectBlocked = effectBlocked,
+                    effectId = parts[9].ifBlank { null },
+                    effectNonce = parts[10].ifBlank { null },
+                    detail = parts[11]
                 )
             }
 
