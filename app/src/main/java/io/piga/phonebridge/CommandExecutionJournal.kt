@@ -1,10 +1,11 @@
 package io.piga.phonebridge
 
 /**
- * Durable marker written immediately before a command is allowed to cross the
- * external device-effect boundary. If the process dies after this marker exists
- * but before a terminal result is persisted, replay is unsafe and must become
- * UNCERTAIN instead of executing the capability again.
+ * Durable marker written immediately after the authoritative effect commit and
+ * immediately before a command is allowed to cross the local execution boundary.
+ * If the process dies after this marker exists but before a terminal result is
+ * persisted, replay is unsafe and must become UNCERTAIN instead of executing
+ * the capability again.
  */
 internal object CommandExecutionJournal {
     data class Entry(
@@ -13,7 +14,9 @@ internal object CommandExecutionJournal {
         val startedAtMs: Long,
         val jobId: String? = null,
         val subjobId: String? = null,
-        val verifiedPlanHash: String? = null
+        val verifiedPlanHash: String? = null,
+        val effectId: String? = null,
+        val effectNonce: String? = null
     )
 
     const val KEY_PREFIX = "command_effect_started_"
@@ -26,12 +29,14 @@ internal object CommandExecutionJournal {
         entry.startedAtMs.toString(),
         entry.jobId.orEmpty(),
         entry.subjobId.orEmpty(),
-        entry.verifiedPlanHash.orEmpty()
+        entry.verifiedPlanHash.orEmpty(),
+        entry.effectId.orEmpty(),
+        entry.effectNonce.orEmpty()
     ).joinToString("\n") { escape(it) }
 
     fun decode(encoded: String): Entry? {
         val parts = splitEscaped(encoded)
-        if (parts.size != 6) return null
+        if (parts.size != 6 && parts.size != 8) return null
         val startedAt = parts[2].toLongOrNull() ?: return null
         if (parts[0].isBlank() || parts[1].isBlank()) return null
         return Entry(
@@ -40,7 +45,9 @@ internal object CommandExecutionJournal {
             startedAtMs = startedAt,
             jobId = parts[3].ifBlank { null },
             subjobId = parts[4].ifBlank { null },
-            verifiedPlanHash = parts[5].ifBlank { null }
+            verifiedPlanHash = parts[5].ifBlank { null },
+            effectId = parts.getOrNull(6)?.ifBlank { null },
+            effectNonce = parts.getOrNull(7)?.ifBlank { null }
         )
     }
 
@@ -53,7 +60,9 @@ internal object CommandExecutionJournal {
             createdAtMs = System.currentTimeMillis(),
             jobId = entry.jobId,
             subjobId = entry.subjobId,
-            verifiedPlanHash = entry.verifiedPlanHash
+            verifiedPlanHash = entry.verifiedPlanHash,
+            effectId = entry.effectId,
+            effectNonce = entry.effectNonce
         )
 
     private fun escape(value: String): String = value
