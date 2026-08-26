@@ -181,7 +181,7 @@ class MainActivity : Activity() {
 
     private fun handleMasterAutonomy(enabled: Boolean) {
         val paired = prefs.getBoolean("paired", false)
-        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        val emergencyStop = prefs.getBoolean("emergency_stop", true)
 
         if (enabled && !paired) {
             setSwitchSilently(masterAutonomySwitch, false)
@@ -233,7 +233,7 @@ class MainActivity : Activity() {
             editor
                 .putString("autonomy_status", "DISARMED_REQUIRES_EXPLICIT_REARM")
                 .apply()
-            toast("Emergency Stop aufgehoben. Master Autonomy bleibt aus.")
+            toast("Lokaler Emergency Stop aufgehoben. Governance-Freigabe kann weiterhin erforderlich sein; Master Autonomy bleibt aus.")
         }
         refreshStatus()
     }
@@ -241,7 +241,7 @@ class MainActivity : Activity() {
     private fun startRuntime() {
         val paired = prefs.getBoolean("paired", false)
         val masterAutonomy = prefs.getBoolean("master_autonomy", false)
-        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        val emergencyStop = prefs.getBoolean("emergency_stop", true)
 
         when {
             !paired -> {
@@ -287,7 +287,7 @@ class MainActivity : Activity() {
     private fun refreshStatus() {
         val paired = prefs.getBoolean("paired", false)
         val master = prefs.getBoolean("master_autonomy", false)
-        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        val emergencyStop = prefs.getBoolean("emergency_stop", true)
         val runtime = prefs.getString("runtime_status", "NOT_STARTED") ?: "NOT_STARTED"
         val recovery = prefs.getString("recovery_status", "NOT_RUN") ?: "NOT_RUN"
         val baseUrl = prefs.getString("base_url", ControlPlaneResolver.CANONICAL_CONTROL_PLANE)
