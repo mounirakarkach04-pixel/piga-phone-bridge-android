@@ -10,19 +10,40 @@ import org.junit.Test
 
 class CommandReceiptContractTest {
     @Test
-    fun ackPathIncludesAckSuffix() {
+    fun ackAdmissionCommitAndResultPathsAreCanonical() {
         assertEquals(
             "/api/bridge/devices/device-1/commands/command-9/ack",
             CommandReceiptContract.ackPath("device-1", "command-9")
         )
-    }
-
-    @Test
-    fun resultPathIncludesResultSuffix() {
+        assertEquals(
+            "/api/bridge/devices/device-1/commands/command-9/admission",
+            CommandReceiptContract.admissionPath("device-1", "command-9")
+        )
+        assertEquals(
+            "/api/bridge/devices/device-1/commands/command-9/admission/commit",
+            CommandReceiptContract.commitPath("device-1", "command-9")
+        )
         assertEquals(
             "/api/bridge/devices/device-1/commands/command-9/result",
             CommandReceiptContract.resultPath("device-1", "command-9")
         )
+    }
+
+    @Test
+    fun effectIntentRoundTripsAcrossPersistenceBoundary() {
+        val original = CommandReceiptContract.EffectIntent(
+            commandId = "command-9",
+            commandNonce = "nonce-7",
+            effectId = "effect-1",
+            effectNonce = "effect-nonce-1",
+            phase = "execution_started",
+            createdAtMs = 123456789L,
+            factoryEvidenceOnly = false
+        )
+        val restored = CommandReceiptContract.decodeEffectIntent(
+            CommandReceiptContract.encodeEffectIntent(original)
+        )
+        assertEquals(original, restored)
     }
 
     @Test
@@ -35,7 +56,11 @@ class CommandReceiptContractTest {
             createdAtMs = 123456789L,
             jobId = "job-1",
             subjobId = "subjob-1",
-            verifiedPlanHash = "a".repeat(64)
+            verifiedPlanHash = "a".repeat(64),
+            resultCode = "local_allowlist_success",
+            effectBlocked = false,
+            effectId = "effect-1",
+            effectNonce = "effect-nonce-1"
         )
         val restored = CommandReceiptContract.decodePendingResult(
             CommandReceiptContract.encodePendingResult(original)
@@ -55,6 +80,35 @@ class CommandReceiptContractTest {
         assertNull(restored.jobId)
         assertNull(restored.subjobId)
         assertNull(restored.verifiedPlanHash)
+        assertNull(restored.effectId)
+    }
+
+    @Test
+    fun legacyEightFieldPendingResultStillDecodes() {
+        val encoded = listOf(
+            "command-9",
+            "nonce-7",
+            "succeeded",
+            "123456789",
+            "job-1",
+            "subjob-1",
+            "a".repeat(64),
+            "legacy detail"
+        ).joinToString("\n")
+        val restored = CommandReceiptContract.decodePendingResult(encoded)
+        assertNotNull(restored)
+        requireNotNull(restored)
+        assertEquals("job-1", restored.jobId)
+        assertEquals("subjob-1", restored.subjobId)
+        assertNull(restored.effectId)
+    }
+
+    @Test
+    fun malformedEffectIntentFailsClosed() {
+        assertNull(CommandReceiptContract.decodeEffectIntent("broken"))
+        assertNull(CommandReceiptContract.decodeEffectIntent(
+            "command\nnonce\neffect\neffectnonce\nexecution_started\nnot-a-number\nfalse"
+        ))
     }
 
     @Test
