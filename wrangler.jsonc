@@ -1,9 +1,15 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "piga-pocket-interface-mesh-preview",
+  "name": "piga-pocket-enterprise",
   "main": "./src/index.js",
   "compatibility_date": "2026-08-26",
   "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "pigapocket.com",
+      "custom_domain": true
+    }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -15,7 +21,7 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "APP_ENV": "preview",
+    "APP_ENV": "production-shell",
     "SOURCE_COMMIT": "a79564a8f074000640e3309780bef410d0b10e76"
   }
 }
