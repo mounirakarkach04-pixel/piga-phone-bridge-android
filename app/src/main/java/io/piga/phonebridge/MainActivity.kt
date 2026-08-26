@@ -59,6 +59,10 @@ class MainActivity : Activity() {
         ensureNotificationChannels()
         buildUi()
         refreshStatus()
+
+        if (!prefs.getBoolean("paired", false) && savedInstanceState == null) {
+            startActivity(Intent(this, PairingActivity::class.java))
+        }
     }
 
     override fun onResume() {
