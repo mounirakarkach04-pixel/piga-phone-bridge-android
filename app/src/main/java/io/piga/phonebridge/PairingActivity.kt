@@ -21,6 +21,7 @@ import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
+import java.time.Instant
 import java.util.UUID
 
 class PairingActivity : Activity() {
@@ -34,10 +35,12 @@ class PairingActivity : Activity() {
     private lateinit var confirmButton: Button
     private var pairingId: String? = null
     private var challenge: String? = null
+    private var challengeExpiresAt: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ensureKey()
+        restorePendingPairing()
 
         val deviceId = ensureDeviceId()
         val publicKey = getPublicKeyBase64()
@@ -45,12 +48,19 @@ class PairingActivity : Activity() {
         status = TextView(this).apply {
             textSize = 18f
             gravity = Gravity.CENTER_HORIZONTAL
-            text = "PIGA Pairing\nStatus: ${if (prefs.getBoolean("paired", false)) "PAIRED" else "NOT PAIRED"}"
+            text = when {
+                prefs.getBoolean("paired", false) -> "PIGA Pairing\nStatus: PAIRED"
+                pairingId != null -> "PIGA Pairing\nStatus: APPROVAL PENDING"
+                else -> "PIGA Pairing\nStatus: NOT PAIRED"
+            }
             setPadding(16, 16, 16, 24)
         }
         baseUrl = EditText(this).apply {
-            hint = "Control Plane URL (auto-discovered if blank)"
-            setText(prefs.getString("base_url", "") ?: "")
+            hint = "Secure control plane"
+            setText(prefs.getString("base_url", ControlPlaneResolver.CANONICAL_CONTROL_PLANE) ?: ControlPlaneResolver.CANONICAL_CONTROL_PLANE)
+            isFocusable = false
+            isCursorVisible = false
+            setTextIsSelectable(true)
             setSingleLine(true)
         }
         val device = EditText(this).apply {
@@ -69,16 +79,16 @@ class PairingActivity : Activity() {
             minLines = 3
         }
         pairingCodeInput = EditText(this).apply {
-            hint = "6-digit owner approval code"
+            hint = "6-digit approval code (fallback)"
             setSingleLine(true)
         }
         challengeButton = Button(this).apply {
-            text = "REQUEST CHALLENGE"
+            text = if (pairingId == null) "PAIR THIS PHONE" else "REQUEST FRESH PAIRING"
             setOnClickListener { requestChallenge() }
         }
         confirmButton = Button(this).apply {
-            text = "CONFIRM PAIRING"
-            isEnabled = false
+            text = "CONFIRM WITH CODE"
+            isEnabled = pairingId != null
             setOnClickListener { confirmPairing() }
         }
         val backButton = Button(this).apply {
@@ -103,17 +113,23 @@ class PairingActivity : Activity() {
             isFillViewport = true
             addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         })
+
+        handlePairingIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePairingIntent(intent)
     }
 
     private fun requestChallenge() {
         challengeButton.isEnabled = false
         confirmButton.isEnabled = false
-        status.text = "Resolving canonical control plane…"
+        status.text = "Connecting securely to PIGA…"
         Thread {
             try {
-                val fallback = baseUrl.text.toString().trim().removeSuffix("/").takeIf { it.isNotBlank() }
-                val root = ControlPlaneResolver.resolve(fallback)
-                require(root.startsWith("https://")) { "Control Plane must use HTTPS." }
+                val root = ControlPlaneResolver.resolve(ControlPlaneResolver.CANONICAL_CONTROL_PLANE)
                 require(prefs.edit().putString("base_url", root).commit()) { "Unable to persist canonical control plane." }
                 val body = JSONObject()
                     .put("deviceId", ensureDeviceId())
@@ -122,33 +138,96 @@ class PairingActivity : Activity() {
                 val response = postJson("$root/api/bridge/pairing/challenge", body)
                 val pid = response.getString("pairingId")
                 val chal = response.getString("challenge")
+                val expiresAt = response.getString("expiresAt")
                 require(pid.isNotBlank() && chal.isNotBlank()) { "Invalid challenge response." }
                 pairingId = pid
                 challenge = chal
-                prefs.edit().putBoolean("paired", false).remove("pairing_id").apply()
+                challengeExpiresAt = expiresAt
+                require(
+                    prefs.edit()
+                        .putBoolean("paired", false)
+                        .remove("pairing_id")
+                        .putString("pending_pairing_id", pid)
+                        .putString("pending_pairing_challenge", chal)
+                        .putString("pending_pairing_expires_at", expiresAt)
+                        .commit()
+                ) { "Unable to persist pairing challenge." }
                 runOnUiThread {
                     baseUrl.setText(root)
-                    status.text = "Challenge created via canonical control plane. Approve pairing in Pocket Enterprise, enter the 6-digit code here, then tap CONFIRM PAIRING."
+                    challengeButton.text = "REQUEST FRESH PAIRING"
+                    status.text = "Pairing request ready. Approve it in PIGA Pocket. If you open the PIGA pairing link on this phone, confirmation happens automatically."
                     challengeButton.isEnabled = true
                     confirmButton.isEnabled = true
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    status.text = "Challenge request failed: ${e.message ?: e.javaClass.simpleName}"
+                    status.text = "Pairing request failed: ${e.message ?: e.javaClass.simpleName}"
                     challengeButton.isEnabled = true
+                    confirmButton.isEnabled = pairingId != null
                 }
             }
         }.start()
     }
 
+    private fun handlePairingIntent(incoming: Intent?) {
+        val uri = incoming?.data ?: return
+        if (!uri.scheme.equals("piga", ignoreCase = true) || !uri.host.equals("pair", ignoreCase = true)) return
+
+        val origin = uri.getQueryParameter("origin")?.trim().orEmpty()
+        val linkedPairingId = uri.getQueryParameter("pairingId")?.trim().orEmpty()
+        val code = uri.getQueryParameter("code")?.trim().orEmpty()
+        val expiresAt = uri.getQueryParameter("expiresAt")?.trim().orEmpty()
+
+        try {
+            val canonicalOrigin = ControlPlaneResolver.validateEndpoint(origin)
+            require(linkedPairingId.isNotBlank()) { "Pairing link is missing its pairing identifier." }
+            require(code.matches(Regex("^\\d{6}$"))) { "Pairing link approval code is invalid." }
+            require(expiresAt.isNotBlank()) { "Pairing link expiry is missing." }
+            require(Instant.parse(expiresAt).isAfter(Instant.now())) { "Pairing link has expired." }
+
+            restorePendingPairing()
+            require(pairingId == linkedPairingId) {
+                "Pairing link does not match the pending request on this phone."
+            }
+            require(!challenge.isNullOrBlank()) { "Pending pairing challenge is unavailable." }
+            val localExpiry = challengeExpiresAt
+            if (!localExpiry.isNullOrBlank()) {
+                require(Instant.parse(localExpiry).isAfter(Instant.now())) { "Pending pairing request has expired." }
+            }
+
+            baseUrl.setText(canonicalOrigin)
+            pairingCodeInput.setText(code)
+            status.text = "Secure approval received. Confirming this phone…"
+            confirmPairing()
+        } catch (e: Exception) {
+            status.text = "Pairing link blocked: ${e.message ?: e.javaClass.simpleName}"
+            confirmButton.isEnabled = pairingId != null
+        }
+    }
+
     private fun confirmPairing() {
+        restorePendingPairing()
         val pid = pairingId ?: run {
-            status.text = "Pairing blocked: request a fresh challenge first."
+            status.text = "Pairing blocked: request a fresh pairing first."
             return
         }
         val chal = challenge ?: run {
             status.text = "Pairing blocked: challenge missing."
             return
+        }
+        val localExpiry = challengeExpiresAt
+        if (!localExpiry.isNullOrBlank()) {
+            try {
+                if (!Instant.parse(localExpiry).isAfter(Instant.now())) {
+                    clearPendingPairing()
+                    status.text = "Pairing request expired. Start a fresh pairing."
+                    return
+                }
+            } catch (_: Exception) {
+                clearPendingPairing()
+                status.text = "Pairing request expiry is invalid. Start a fresh pairing."
+                return
+            }
         }
         val code = pairingCodeInput.text.toString().trim()
         if (!code.matches(Regex("^\\d{6}$"))) {
@@ -157,11 +236,11 @@ class PairingActivity : Activity() {
         }
 
         confirmButton.isEnabled = false
+        challengeButton.isEnabled = false
         status.text = "Signing and confirming pairing…"
         Thread {
             try {
-                val fallback = baseUrl.text.toString().trim().removeSuffix("/").takeIf { it.isNotBlank() }
-                val root = ControlPlaneResolver.resolve(fallback)
+                val root = ControlPlaneResolver.resolve(prefs.getString("base_url", null))
                 val signingPayload = "PAIR_CONFIRM\n$pid\n$chal"
                 val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
@@ -182,24 +261,54 @@ class PairingActivity : Activity() {
                         .putBoolean("paired", true)
                         .putString("pairing_id", pid)
                         .putString("base_url", root)
+                        .remove("pending_pairing_id")
+                        .remove("pending_pairing_challenge")
+                        .remove("pending_pairing_expires_at")
                         .commit()
                 ) { "Unable to persist paired state." }
+                pairingId = null
+                challenge = null
+                challengeExpiresAt = null
                 runOnUiThread {
                     baseUrl.setText(root)
                     pairingCodeInput.setText("")
-                    status.text = "PAIRED. Starting governed bridge runtime…"
+                    status.text = "PAIRED. Secure phone connection is active."
                     val service = Intent(this@PairingActivity, BridgeService::class.java)
                     if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
                     confirmButton.isEnabled = false
+                    challengeButton.text = "REQUEST FRESH PAIRING"
                     challengeButton.isEnabled = true
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     status.text = "Pairing confirmation failed: ${e.message ?: e.javaClass.simpleName}"
-                    confirmButton.isEnabled = true
+                    confirmButton.isEnabled = pairingId != null
+                    challengeButton.isEnabled = true
                 }
             }
         }.start()
+    }
+
+    private fun restorePendingPairing() {
+        val storedId = prefs.getString("pending_pairing_id", null)?.trim()
+        val storedChallenge = prefs.getString("pending_pairing_challenge", null)?.trim()
+        val storedExpiry = prefs.getString("pending_pairing_expires_at", null)?.trim()
+        if (!storedId.isNullOrBlank() && !storedChallenge.isNullOrBlank()) {
+            pairingId = storedId
+            challenge = storedChallenge
+            challengeExpiresAt = storedExpiry
+        }
+    }
+
+    private fun clearPendingPairing() {
+        pairingId = null
+        challenge = null
+        challengeExpiresAt = null
+        prefs.edit()
+            .remove("pending_pairing_id")
+            .remove("pending_pairing_challenge")
+            .remove("pending_pairing_expires_at")
+            .apply()
     }
 
     private fun ensureDeviceId(): String {
