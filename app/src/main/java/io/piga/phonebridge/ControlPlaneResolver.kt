@@ -6,8 +6,11 @@ import java.net.URI
 import java.net.URL
 
 object ControlPlaneResolver {
-    private const val discoveryUrl = "https://raw.githubusercontent.com/mounirakarkach04-pixel/piga-phone-bridge-android/main/control-plane.json"
-    private const val cacheMs = 300_000L
+    const val CANONICAL_CONTROL_PLANE = "https://pigapocket.com"
+
+    private const val DISCOVERY_URL =
+        "https://raw.githubusercontent.com/mounirakarkach04-pixel/piga-phone-bridge-android/main/control-plane.json"
+    private const val CACHE_MS = 300_000L
 
     @Volatile private var cachedUrl: String? = null
     @Volatile private var cachedAtMs: Long = 0L
@@ -16,7 +19,7 @@ object ControlPlaneResolver {
     fun resolve(fallback: String? = null): String {
         val now = System.currentTimeMillis()
         val cached = cachedUrl
-        if (!cached.isNullOrBlank() && now - cachedAtMs < cacheMs) return cached
+        if (!cached.isNullOrBlank() && now - cachedAtMs < CACHE_MS) return cached
 
         val discovered = try {
             fetchCanonicalUrl()
@@ -24,24 +27,24 @@ object ControlPlaneResolver {
             null
         }
 
-        if (!discovered.isNullOrBlank()) {
-            cachedUrl = discovered
-            cachedAtMs = now
-            return discovered
+        val candidate = when {
+            !discovered.isNullOrBlank() -> discovered
+            !fallback.isNullOrBlank() -> fallback
+            else -> CANONICAL_CONTROL_PLANE
         }
 
-        val validatedFallback = fallback?.trim()?.removeSuffix("/")?.takeIf { it.isNotBlank() }
-            ?.let(::validateEndpoint)
-        if (validatedFallback != null) return validatedFallback
-
-        throw IllegalStateException("Canonical control-plane discovery unavailable and no valid fallback exists")
+        val validated = validateEndpoint(candidate)
+        cachedUrl = validated
+        cachedAtMs = now
+        return validated
     }
 
     private fun fetchCanonicalUrl(): String {
-        val connection = (URL(discoveryUrl).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(DISCOVERY_URL).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 10_000
             readTimeout = 10_000
+            instanceFollowRedirects = true
             setRequestProperty("Accept", "application/json")
         }
         val code = connection.responseCode
@@ -51,23 +54,40 @@ object ControlPlaneResolver {
         if (code !in 200..299) throw IllegalStateException("Discovery HTTP $code")
 
         val json = JSONObject(text)
-        require(json.optString("schema") == "piga.control-plane-discovery.v1") { "Unsupported discovery schema" }
+        require(json.optString("schema") == "piga.control-plane-discovery.v1") {
+            "Unsupported discovery schema"
+        }
         require(json.optInt("epoch", 0) > 0) { "Invalid discovery epoch" }
         val governance = json.optJSONObject("governance")
             ?: throw IllegalStateException("Discovery governance missing")
-        require(governance.optString("mode") == "fail-closed") { "Discovery must be fail-closed" }
-        require(governance.optBoolean("materialChangeRequiresReEntry", false)) { "Re-entry invariant missing" }
+        require(governance.optString("mode") == "fail-closed") {
+            "Discovery must be fail-closed"
+        }
+        require(governance.optBoolean("materialChangeRequiresReEntry", false)) {
+            "Re-entry invariant missing"
+        }
 
         return validateEndpoint(json.getString("controlPlaneUrl"))
     }
 
-    private fun validateEndpoint(raw: String): String {
+    internal fun validateEndpoint(raw: String): String {
         val normalized = raw.trim().removeSuffix("/")
         val uri = URI(normalized)
-        require(uri.scheme.equals("https", ignoreCase = true)) { "Control plane must use HTTPS" }
-        require(!uri.host.isNullOrBlank()) { "Control plane host missing" }
-        require(uri.userInfo == null) { "Control plane credentials forbidden" }
-        require(uri.query == null && uri.fragment == null) { "Control plane URL must be canonical" }
+        require(uri.scheme.equals("https", ignoreCase = true)) {
+            "Control plane must use HTTPS"
+        }
+        require(uri.host.equals("pigapocket.com", ignoreCase = true)) {
+            "Untrusted control-plane host"
+        }
+        require(uri.port == -1) { "Non-default control-plane port forbidden" }
+        require(uri.userInfo == null) { "Control-plane credentials forbidden" }
+        require(uri.path.isNullOrEmpty()) { "Control-plane URL must not contain a path" }
+        require(uri.query == null && uri.fragment == null) {
+            "Control-plane URL must be canonical"
+        }
+        require(normalized == CANONICAL_CONTROL_PLANE) {
+            "Control-plane origin mismatch"
+        }
         return normalized
     }
 }
