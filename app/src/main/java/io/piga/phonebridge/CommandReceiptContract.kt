@@ -1,15 +1,21 @@
 package io.piga.phonebridge
 
 /**
- * Pure contract helpers for the command ACK/result lifecycle.
+ * Pure contract helpers for the command ACK/admission/result lifecycle.
  *
- * Factory correlation is carried end-to-end when present, while decode remains
- * compatible with the older five-field pending-result format so an app update
- * cannot strand an existing local outbox entry.
+ * Factory correlation and authoritative effect identity are carried end-to-end
+ * when present. Decode remains compatible with older local outbox formats so
+ * an app update cannot strand evidence that was persisted by a prior build.
  */
 object CommandReceiptContract {
     fun ackPath(deviceId: String, commandId: String): String =
         "/api/bridge/devices/$deviceId/commands/$commandId/ack"
+
+    fun admissionPath(deviceId: String, commandId: String): String =
+        "/api/bridge/devices/$deviceId/commands/$commandId/admission"
+
+    fun admissionCommitPath(deviceId: String, commandId: String): String =
+        "/api/bridge/devices/$deviceId/commands/$commandId/admission/commit"
 
     fun resultPath(deviceId: String, commandId: String): String =
         "/api/bridge/devices/$deviceId/commands/$commandId/result"
@@ -30,7 +36,9 @@ object CommandReceiptContract {
         val createdAtMs: Long,
         val jobId: String? = null,
         val subjobId: String? = null,
-        val verifiedPlanHash: String? = null
+        val verifiedPlanHash: String? = null,
+        val effectId: String? = null,
+        val effectNonce: String? = null
     )
 
     fun outboxKey(commandId: String): String = "pending_command_result_$commandId"
@@ -43,6 +51,8 @@ object CommandReceiptContract {
         result.jobId.orEmpty(),
         result.subjobId.orEmpty(),
         result.verifiedPlanHash.orEmpty(),
+        result.effectId.orEmpty(),
+        result.effectNonce.orEmpty(),
         result.detail
     ).joinToString("\n") { escape(it) }
 
@@ -71,6 +81,22 @@ object CommandReceiptContract {
                     subjobId = parts[5].ifBlank { null },
                     verifiedPlanHash = parts[6].ifBlank { null },
                     detail = parts[7]
+                )
+            }
+
+            10 -> {
+                val createdAt = parts[3].toLongOrNull() ?: return null
+                PendingResult(
+                    commandId = parts[0],
+                    commandNonce = parts[1],
+                    status = parts[2],
+                    createdAtMs = createdAt,
+                    jobId = parts[4].ifBlank { null },
+                    subjobId = parts[5].ifBlank { null },
+                    verifiedPlanHash = parts[6].ifBlank { null },
+                    effectId = parts[7].ifBlank { null },
+                    effectNonce = parts[8].ifBlank { null },
+                    detail = parts[9]
                 )
             }
 
