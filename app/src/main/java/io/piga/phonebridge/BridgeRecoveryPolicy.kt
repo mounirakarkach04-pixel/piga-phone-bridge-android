@@ -2,8 +2,9 @@ package io.piga.phonebridge
 
 /**
  * Pure decision layer for A7SEM-Reverse recovery.
- * Recovery is evidence-driven: restart only when the runtime heartbeat is stale,
- * never bypass local safety gates, and classify the reason for diagnostics.
+ * Recovery is evidence-driven: restart only when the local runtime heartbeat is stale,
+ * never confuse a remote/control-plane outage with a dead Android runtime, never bypass
+ * local safety gates, and classify the reason for diagnostics.
  */
 object BridgeRecoveryPolicy {
     const val STALE_AFTER_MS = 90_000L
@@ -12,7 +13,7 @@ object BridgeRecoveryPolicy {
         val paired: Boolean,
         val masterAutonomy: Boolean,
         val emergencyStop: Boolean,
-        val lastPollMs: Long,
+        val runtimeHeartbeatMs: Long,
         val nowMs: Long
     )
 
@@ -29,8 +30,8 @@ object BridgeRecoveryPolicy {
         if (snapshot.emergencyStop) return Action.SKIP_EMERGENCY_STOP
         if (!snapshot.masterAutonomy) return Action.SKIP_DISARMED
 
-        val heartbeatMissing = snapshot.lastPollMs <= 0L
-        val heartbeatStale = heartbeatMissing || snapshot.nowMs - snapshot.lastPollMs > STALE_AFTER_MS
+        val heartbeatMissing = snapshot.runtimeHeartbeatMs <= 0L
+        val heartbeatStale = heartbeatMissing || snapshot.nowMs - snapshot.runtimeHeartbeatMs > STALE_AFTER_MS
         return if (heartbeatStale) Action.RESTART_STALE_RUNTIME else Action.HEALTHY_NOOP
     }
 }
