@@ -34,6 +34,8 @@ class PairingActivity : Activity() {
     private lateinit var confirmButton: Button
     private var pairingId: String? = null
     private var challenge: String? = null
+    private var pairingServerPublicKey: String? = null
+    private var pairingServerKeyId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -122,9 +124,15 @@ class PairingActivity : Activity() {
                 val response = postJson("$root/api/bridge/pairing/challenge", body)
                 val pid = response.getString("pairingId")
                 val chal = response.getString("challenge")
+                val serverPublicKey = response.getString("serverPublicKey").trim()
+                val serverKeyId = response.getString("serverKeyId").trim()
                 require(pid.isNotBlank() && chal.isNotBlank()) { "Invalid challenge response." }
+                require(serverPublicKey.isNotBlank() && serverKeyId.isNotBlank()) { "Pairing server identity missing." }
+                validateExistingServerPin(serverPublicKey, serverKeyId)
                 pairingId = pid
                 challenge = chal
+                pairingServerPublicKey = serverPublicKey
+                pairingServerKeyId = serverKeyId
                 prefs.edit().putBoolean("paired", false).remove("pairing_id").apply()
                 runOnUiThread {
                     baseUrl.setText(root)
@@ -133,6 +141,10 @@ class PairingActivity : Activity() {
                     confirmButton.isEnabled = true
                 }
             } catch (e: Exception) {
+                pairingId = null
+                challenge = null
+                pairingServerPublicKey = null
+                pairingServerKeyId = null
                 runOnUiThread {
                     status.text = "Challenge request failed: ${e.message ?: e.javaClass.simpleName}"
                     challengeButton.isEnabled = true
@@ -148,6 +160,14 @@ class PairingActivity : Activity() {
         }
         val chal = challenge ?: run {
             status.text = "Pairing blocked: challenge missing."
+            return
+        }
+        val expectedServerPublicKey = pairingServerPublicKey ?: run {
+            status.text = "Pairing blocked: server identity missing."
+            return
+        }
+        val expectedServerKeyId = pairingServerKeyId ?: run {
+            status.text = "Pairing blocked: server key id missing."
             return
         }
         val code = pairingCodeInput.text.toString().trim()
@@ -168,7 +188,7 @@ class PairingActivity : Activity() {
                 val signer = Signature.getInstance("SHA256withECDSA")
                 signer.initSign(entry.privateKey)
                 signer.update(signingPayload.toByteArray(Charsets.UTF_8))
-                val signature = Base64.encodeToString(signer.sign(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+                val signature = Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
                 val body = JSONObject()
                     .put("deviceId", ensureDeviceId())
                     .put("pairingId", pid)
@@ -176,12 +196,20 @@ class PairingActivity : Activity() {
                     .put("signature", signature)
                 val response = postJson("$root/api/bridge/pairing/confirm", body)
                 val confirmedPairingId = response.optString("pairingId", pid)
+                val confirmedServerPublicKey = response.getString("serverPublicKey").trim()
+                val confirmedServerKeyId = response.getString("serverKeyId").trim()
                 require(confirmedPairingId == pid) { "Pairing confirmation returned unexpected pairingId." }
+                require(confirmedServerPublicKey == expectedServerPublicKey) { "Server public key changed during pairing." }
+                require(confirmedServerKeyId == expectedServerKeyId) { "Server key id changed during pairing." }
+                validateExistingServerPin(confirmedServerPublicKey, confirmedServerKeyId)
                 require(
                     prefs.edit()
                         .putBoolean("paired", true)
                         .putString("pairing_id", pid)
                         .putString("base_url", root)
+                        .putString("server_public_key", confirmedServerPublicKey)
+                        .putString("server_key_id", confirmedServerKeyId)
+                        .putLong("bridge_runtime_counter", 0L)
                         .commit()
                 ) { "Unable to persist paired state." }
                 runOnUiThread {
@@ -200,6 +228,17 @@ class PairingActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun validateExistingServerPin(publicKey: String, keyId: String) {
+        val pinnedPublicKey = prefs.getString("server_public_key", null)?.trim()
+        val pinnedKeyId = prefs.getString("server_key_id", null)?.trim()
+        if (!pinnedPublicKey.isNullOrBlank()) {
+            require(pinnedPublicKey == publicKey) { "Server public key differs from the previously paired identity." }
+        }
+        if (!pinnedKeyId.isNullOrBlank()) {
+            require(pinnedKeyId == keyId) { "Server key id differs from the previously paired identity." }
+        }
     }
 
     private fun ensureDeviceId(): String {
