@@ -60,10 +60,10 @@ jobs:
 
           probe_get root "$CANDIDATE_ORIGIN/"
           probe_get healthz "$CANDIDATE_ORIGIN/api/healthz"
-          # Deliberately invalid input: exercises route identity without creating a pairing ceremony.
+          # Deliberately invalid inputs: exercise route identity without creating a pairing ceremony.
           probe_post_json pairing_invalid "$CANDIDATE_ORIGIN/api/bridge/pairing/challenge" '{}'
-          # Still deliberately invalid device identity; this only reveals the legacy capabilities schema.
           probe_post_json pairing_schema "$CANDIDATE_ORIGIN/api/bridge/pairing/challenge" '{"deviceId":"x","publicKey":"x","capabilities":{}}'
+          probe_post_json confirm_invalid "$CANDIDATE_ORIGIN/api/bridge/pairing/confirm" '{}'
 
           python - <<'PY'
           import json
@@ -88,6 +88,8 @@ jobs:
           challenge = parse_json(read('pairing_invalid', 'body'))
           schema_status = read('pairing_schema', 'status')
           schema = parse_json(read('pairing_schema', 'body'))
+          confirm_status = read('confirm_invalid', 'status')
+          confirm = parse_json(read('confirm_invalid', 'body'))
 
           enterprise_fingerprint = bool(
               health_status == '200'
@@ -119,6 +121,11 @@ jobs:
                   'httpStatus': schema_status,
                   'curlExitCode': read('pairing_schema', 'curl_rc'),
                   'json': schema,
+              },
+              'invalidPairingConfirm': {
+                  'httpStatus': confirm_status,
+                  'curlExitCode': read('confirm_invalid', 'curl_rc'),
+                  'json': confirm,
               },
               'enterpriseApiFingerprint': enterprise_fingerprint,
               'authorityGranted': False,
