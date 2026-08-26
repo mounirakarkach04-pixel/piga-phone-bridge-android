@@ -21,6 +21,8 @@ jobs:
           python-version: '3.13'
 
       - name: Verify PIGA cross-plane synchronization
+        id: piga_sync
+        continue-on-error: true
         run: python scripts/check_piga_sync.py
 
       - name: Verify canonical control-plane discovery manifest
@@ -73,3 +75,9 @@ jobs:
             app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/apk/debug/app-debug.apk.sha256
           if-no-files-found: error
+
+      - name: Enforce cross-plane synchronization gate
+        if: steps.piga_sync.outcome != 'success'
+        run: |
+          echo 'PIGA cross-plane synchronization remains unresolved.' >&2
+          exit 1
