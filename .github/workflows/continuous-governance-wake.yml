@@ -10,7 +10,7 @@ on:
   repository_dispatch:
     types: [piga-governance-wake]
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/30 * * * *'
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ concurrency:
 jobs:
   wake:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
       - name: Resolve canonical control plane
         id: control
@@ -34,11 +34,40 @@ jobs:
           MANIFEST="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/control-plane.json"
           JSON="$(curl --fail --silent --show-error --location --max-time 15 "$MANIFEST")"
           ROOT="$(python -c 'import json,sys; print(json.load(sys.stdin)["controlPlaneUrl"].rstrip("/"))' <<<"$JSON")"
-          test -n "$ROOT"
-          case "$ROOT" in https://*) ;; *) echo "Non-HTTPS control plane rejected" >&2; exit 1;; esac
+          test "$ROOT" = "https://pigapocket.com"
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
 
+      - name: Probe admitted control-plane health
+        id: probe
+        env:
+          ROOT: ${{ steps.control.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          HTTP_CODE="$(curl --silent --show-error --location --max-time 15 \
+            --output /tmp/piga-health.json \
+            --write-out '%{http_code}' \
+            "$ROOT/api/health" || true)"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "reason=CONTROL_PLANE_HEALTH_HTTP_${HTTP_CODE:-000}" >> "$GITHUB_OUTPUT"
+            echo "Branch-local DELAY: control plane is not ready; no authority was created."
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('/tmp/piga-health.json').read_text())
+          assert payload.get('schema') == 'piga.control-plane-health.v1'
+          assert payload.get('status') in {'ALLOW', 'IDLE', 'HEARTBEAT'}
+          assert payload.get('engineCount') == 5
+          assert payload.get('additionalEngineCreated') is False
+          PY
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "reason=HEALTH_ADMITTED" >> "$GITHUB_OUTPUT"
+
       - name: Obtain GitHub OIDC token
+        if: steps.probe.outputs.ready == 'true'
         id: oidc
         shell: bash
         run: |
@@ -49,9 +78,11 @@ jobs:
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
           TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"$RESPONSE")"
           test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Drive admitted cycles immediately
+        if: steps.probe.outputs.ready == 'true'
         id: drive
         env:
           ROOT: ${{ steps.control.outputs.root }}
@@ -61,7 +92,7 @@ jobs:
           set -euo pipefail
           more="true"
           cycles=0
-          max_cycles=250
+          max_cycles=50
           last='{}'
           while [ "$more" = "true" ] && [ "$cycles" -lt "$max_cycles" ]; do
             cycles=$((cycles + 1))
@@ -86,7 +117,7 @@ jobs:
           echo "more=$more" >> "$GITHUB_OUTPUT"
 
       - name: Immediate continuation dispatch
-        if: steps.drive.outputs.more == 'true'
+        if: steps.probe.outputs.ready == 'true' && steps.drive.outputs.more == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -98,3 +129,17 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             --data '{"event_type":"piga-governance-wake","client_payload":{"reason":"immediate-continuation"}}'
+
+      - name: Governance heartbeat summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### PIGA Continuous Governance Wake'
+            echo "- Control plane: ${{ steps.control.outputs.root }}"
+            echo "- Probe: ${{ steps.probe.outputs.reason }}"
+            echo "- Cycles: ${{ steps.drive.outputs.cycles || '0' }}"
+            echo "- More ready: ${{ steps.drive.outputs.more || 'false' }}"
+            echo '- Engine count: 5'
+            echo '- Additional engine created: false'
+          } >> "$GITHUB_STEP_SUMMARY"
