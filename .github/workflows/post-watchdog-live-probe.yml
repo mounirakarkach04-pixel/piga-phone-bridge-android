@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Probe pigapocket production
+      - name: Probe pigapocket production and Clerk DNS
         shell: bash
         run: |
           set -euo pipefail
@@ -34,9 +34,14 @@ jobs:
             echo
             rm -f "$body"
           }
-          probe GET https://pigapocket.com/
           probe GET https://pigapocket.com/healthz
           probe GET https://pigapocket.com/api/health
-          probe GET https://pigapocket.com/device-pairing
           probe POST https://pigapocket.com/api/bridge/pairing/challenge '{}'
-          probe POST https://pigapocket.com/api/bridge/pairing/confirm '{}'
+          echo '=== Clerk-related DNS ==='
+          for name in clerk.pigapocket.com accounts.pigapocket.com email.pigapocket.com clkmail.pigapocket.com; do
+            echo "--- $name CNAME ---"
+            dig +short CNAME "$name" || true
+            echo "--- $name A/AAAA ---"
+            dig +short A "$name" || true
+            dig +short AAAA "$name" || true
+          done
