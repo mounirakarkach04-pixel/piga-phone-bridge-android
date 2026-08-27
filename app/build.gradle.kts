@@ -11,8 +11,8 @@ android {
         applicationId = "io.piga.phonebridge.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.2.0"
+        versionCode = 100
+        versionName = "1.0.0"
 
         vectorDrawables {
             useSupportLibrary = false
