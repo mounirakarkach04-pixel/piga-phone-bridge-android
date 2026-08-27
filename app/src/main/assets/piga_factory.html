@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#f7f9ff">
+<title>PIGA Factory</title>
+<style>
+:root{--bg:#f7f9ff;--ink:#16223a;--mut:#6e7892;--pri:#5b6cff;--cyan:#5cc8ff;--violet:#8a6bff;--ok:#2e9f7a;--warn:#c5892e;--red:#d25468;--line:#d7e2f5;--glass:rgba(255,255,255,.82)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}body{margin:0;background:radial-gradient(circle at 10% 0,#e4f7ff,transparent 30%),radial-gradient(circle at 100% 8%,#eee9ff,transparent 30%),var(--bg);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink)}button{font:inherit}.app{max-width:560px;min-height:100vh;margin:auto;padding:calc(env(safe-area-inset-top) + 15px) 14px calc(env(safe-area-inset-bottom) + 92px)}
+.top{display:flex;justify-content:space-between;align-items:center;padding:3px 4px 15px}.brand{font-weight:950;letter-spacing:1.3px;font-size:12px}.native{display:flex;gap:7px;align-items:center;font-size:9px;color:var(--mut);font-weight:800}.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px #2e9f7a14}.dot.bad{background:var(--red);box-shadow:0 0 0 4px #d2546814}
+.glass{background:var(--glass);backdrop-filter:blur(24px);border:1px solid var(--line);box-shadow:0 14px 38px #31476f12}.hero{border-radius:29px;padding:20px;position:relative;overflow:hidden}.hero:before{content:"";position:absolute;inset:0;background:linear-gradient(135deg,#5ac9ff16,#8d6fff10,transparent);pointer-events:none}.eyebrow{font-size:9px;letter-spacing:1.2px;font-weight:900;color:var(--pri)}.live{position:absolute;right:17px;top:17px;font-size:8px;font-weight:900;padding:6px 8px;border-radius:999px;background:#edf1ff;color:var(--pri)}h1{font-size:31px;line-height:1.03;letter-spacing:-1.2px;margin:9px 0 18px}.orbwrap{text-align:center;margin:9px 0 18px}.halo{width:112px;height:112px;margin:auto;border-radius:50%;display:grid;place-items:center;border:1px solid #5cc8ff55;background:#5cc8ff0d}.orb{width:78px;height:78px;border:0;border-radius:50%;background:linear-gradient(135deg,var(--pri),#7588ff,var(--violet));box-shadow:0 13px 31px #5b6cff50;color:#fff;font-size:30px}.ask{font-size:16px;font-weight:900;margin-top:13px}.hint{font-size:10px;color:var(--mut);margin-top:5px}.proofline{display:grid;grid-template-columns:1fr 1fr;gap:8px;border-top:1px solid var(--line);padding-top:14px}.proof{padding:10px;border-radius:15px;background:#fff9;border:1px solid #e7ecf6}.proof b{display:block;font-size:11px}.proof span{display:block;font-size:8px;color:var(--mut);margin-top:4px}.ok{color:var(--ok)!important}.warn{color:var(--warn)!important}.bad{color:var(--red)!important}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.metric{border-radius:19px;padding:12px 8px}.metric b{display:block;font-size:19px}.metric span{font-size:8px;color:var(--mut)}.sectionHead{display:flex;justify-content:space-between;align-items:end;margin:18px 4px 9px}.sectionHead b{font-size:14px}.sectionHead span{font-size:8px;color:var(--pri);font-weight:900}.cards{display:grid;gap:9px}.card{width:100%;border-radius:21px;padding:14px;border:1px solid var(--line);background:var(--glass);display:grid;grid-template-columns:45px 1fr auto;gap:11px;align-items:center;text-align:left;color:var(--ink);box-shadow:0 9px 24px #334b780d}.ico{width:45px;height:45px;border-radius:15px;background:#eef2ff;display:grid;place-items:center;font-size:19px}.card strong{font-size:12px;display:block}.card small{font-size:8px;color:var(--mut);display:block;margin-top:3px;line-height:1.4}.pill{font-size:7px;font-weight:900;border-radius:999px;padding:6px 7px;background:#edf8f4;color:var(--ok);white-space:nowrap}.pill.gated{background:#fff6e7;color:var(--warn)}.pill.local{background:#eef2ff;color:var(--pri)}
+.panel{display:none}.panel.active{display:block}.governance{border-radius:24px;padding:15px;margin-top:10px}.flow{display:flex;align-items:center;gap:5px;overflow:auto;padding:4px 0}.stage{flex:0 0 auto;padding:8px 9px;background:#fff;border:1px solid var(--line);border-radius:13px;font-size:8px;font-weight:800}.arrow{font-size:11px;color:var(--mut)}.rule{font-size:9px;color:var(--mut);line-height:1.5;margin-top:10px}.danger{width:100%;border:1px solid #e8bec7;background:#fff0f2;color:var(--red);border-radius:17px;padding:14px;font-weight:900;margin-top:12px}.actionGrid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}.action{border:1px solid var(--line);border-radius:17px;padding:13px;background:#fff;color:var(--ink);font-weight:850;font-size:11px}.action.primary{background:var(--pri);color:white;border-color:var(--pri)}
+.sheetBack{position:fixed;inset:0;background:#17233c24;backdrop-filter:blur(8px);display:none;place-items:end center;z-index:30}.sheetBack.on{display:grid}.sheet{width:min(560px,100%);max-height:82vh;overflow:auto;background:#f9fbff;border-radius:30px 30px 0 0;padding:20px 16px calc(env(safe-area-inset-bottom) + 20px);border:1px solid var(--line);box-shadow:0 -20px 60px #24385a22}.sheetTop{display:flex;justify-content:space-between;align-items:center}.sheet h2{font-size:23px;margin:4px 0 13px}.close{width:36px;height:36px;border-radius:50%;border:0;background:#edf1f8;font-size:18px}.detail{padding:13px;border:1px solid var(--line);border-radius:17px;background:#fff;margin-top:8px}.detail b{display:block;font-size:11px}.detail small{font-size:8px;color:var(--mut)}
+.nav{position:fixed;z-index:20;bottom:10px;left:50%;transform:translateX(-50%);width:min(532px,calc(100% - 22px));height:68px;border-radius:24px;display:flex;justify-content:space-around;align-items:center}.nav button{border:0;background:transparent;color:var(--mut);font-size:9px;font-weight:800;display:grid;gap:4px;place-items:center}.nav i{font-style:normal;font-size:20px}.nav button.active{color:var(--pri)}
+</style>
+</head>
+<body>
+<main class="app">
+<div class="top"><div class="brand">PIGA FACTORY</div><div class="native"><span id="nativeDot" class="dot"></span><span id="nativeState">LOCAL RUNTIME</span></div></div>
+
+<section id="home" class="panel active">
+  <div class="hero glass">
+    <div class="eyebrow">PIGA FACTORY · STANDALONE</div><div class="live">LOCAL-FIRST</div>
+    <h1>Dein Unternehmen.<br>Als Software.</h1>
+    <div class="orbwrap"><button class="orb" onclick="openModule('PIGA Intelligence','Lokale Steueroberfläche für Ziele und Aufgaben. Externe Modellinferenz bleibt gesperrt, bis ein verifizierter Provider verbunden ist.','LOCAL UI')">◉</button><div class="ask">Was soll PIGA erreichen?</div><div class="hint">A7SEM prüft zuerst · A7SEM Reverse prüft das beobachtete Ergebnis zurück</div></div>
+    <div class="proofline"><div class="proof"><b>A7SEM</b><span class="ok">UPSTREAM · ACTIVE</span></div><div class="proof"><b>A7SEM Reverse</b><span class="ok">READBACK · ACTIVE</span></div></div>
+  </div>
+  <div class="metrics"><div class="metric glass"><b id="pairMetric">—</b><span>PAIRING</span></div><div class="metric glass"><b id="runtimeMetric">—</b><span>RUNTIME</span></div><div class="metric glass"><b>∞</b><span>LOCAL UI</span></div></div>
+  <div class="sectionHead"><b>Heute / Enterprise Pulse</b><span>OBSERVED STATE</span></div>
+  <div class="cards">
+    <button class="card" onclick="showPanel('factory')"><span class="ico">⬡</span><span><strong>Factory</strong><small>Ziele, Worker, Automation und ausführbare Module</small></span><span class="pill local">LOCAL</span></button>
+    <button class="card" onclick="showPanel('control')"><span class="ico">◈</span><span><strong>Governance & Control</strong><small>A7SEM → Aktion → Evidenz → A7SEM Reverse</small></span><span class="pill">ACTIVE</span></button>
+    <button class="card" onclick="showPanel('evidence')"><span class="ico">✓</span><span><strong>Evidence</strong><small>Gerätestatus, Receipts und überprüfbare Laufzeitzustände</small></span><span class="pill local">LOCAL</span></button>
+  </div>
+</section>
+
+<section id="factory" class="panel">
+  <div class="sectionHead"><b>PIGA Factory</b><span>CAPABILITY MAP</span></div>
+  <div id="factoryCards" class="cards"></div>
+</section>
+
+<section id="control" class="panel">
+  <div class="sectionHead"><b>Control</b><span>FAIL-CLOSED</span></div>
+  <div class="governance glass"><div class="eyebrow">VERBINDLICHER ABLAUF</div><div class="flow"><span class="stage">A7SEM</span><span class="arrow">→</span><span class="stage">AKTION</span><span class="arrow">→</span><span class="stage">EVIDENZ</span><span class="arrow">→</span><span class="stage">A7SEM REVERSE</span><span class="arrow">→</span><span class="stage">CONCLUSION</span></div><div class="rule">A7SEM Reverse ist keine sechste Engine und wird nie ohne vorausgehendes A7SEM als Freigabemechanismus behandelt. Unbeobachtete oder unklassifizierte Zustände werden nicht als Erfolg dargestellt.</div></div>
+  <div class="actionGrid"><button class="action primary" onclick="nativeCall('openNativeControl')">Native Control</button><button class="action" onclick="nativeCall('openDiagnostics')">Diagnose</button><button class="action" onclick="nativeCall('openPairing')">Gerät koppeln</button><button class="action" onclick="refreshStatus()">Status neu lesen</button></div>
+  <button class="danger" onclick="emergencyStop()">■ EMERGENCY STOP</button>
+</section>
+
+<section id="evidence" class="panel">
+  <div class="sectionHead"><b>Evidence</b><span>DEVICE READBACK</span></div>
+  <div class="cards">
+    <div class="card"><span class="ico">📱</span><span><strong>Gerätekopplung</strong><small id="pairDetail">wird gelesen…</small></span><span id="pairPill" class="pill gated">UNKNOWN</span></div>
+    <div class="card"><span class="ico">⌁</span><span><strong>Governed Runtime</strong><small id="runtimeDetail">wird gelesen…</small></span><span id="runtimePill" class="pill gated">UNKNOWN</span></div>
+    <div class="card"><span class="ico">■</span><span><strong>Emergency Stop</strong><small>Native Sicherheitsgrenze</small></span><span id="stopPill" class="pill">OFF</span></div>
+    <div class="card"><span class="ico">◇</span><span><strong>App Identity</strong><small id="identityDetail">com.pigafactory.app</small></span><span class="pill local">LOCAL</span></div>
+  </div>
+</section>
+
+<section id="more" class="panel">
+  <div class="sectionHead"><b>Mehr</b><span>MODULES</span></div>
+  <div id="moreCards" class="cards"></div>
+  <div class="actionGrid"><button class="action" onclick="nativeCall('openPairing')">Pairing</button><button class="action" onclick="nativeCall('openDiagnostics')">Diagnose</button></div>
+</section>
+</main>
+
+<nav class="nav glass">
+<button id="nav-home" class="active" onclick="showPanel('home')"><i>⌂</i>Home</button>
+<button id="nav-factory" onclick="showPanel('factory')"><i>⬡</i>Factory</button>
+<button id="nav-control" onclick="showPanel('control')"><i>◈</i>Control</button>
+<button id="nav-evidence" onclick="showPanel('evidence')"><i>✓</i>Evidence</button>
+<button id="nav-more" onclick="showPanel('more')"><i>•••</i>Mehr</button>
+</nav>
+
+<div id="sheetBack" class="sheetBack" onclick="if(event.target===this)closeSheet()"><section class="sheet"><div class="sheetTop"><div><div class="eyebrow">PIGA FACTORY MODULE</div><h2 id="sheetTitle">Modul</h2></div><button class="close" onclick="closeSheet()">×</button></div><div id="sheetBody"></div></section></div>
+
+<script>
+const factoryModules=[
+ ['💼','Factory Goals & Workers','Ziele, Worker-Status und kontrollierte Ausführung','LOCAL UI'],
+ ['✦','PIGA Intelligence','Modellrouting und Assistenz; Inferenz nur nach verifizierter Provider-Anbindung','GATED'],
+ ['▦','Apps & Tools','Adapter für Mail, Kalender, CRM, Dateien und weitere Dienste','GATED'],
+ ['⚙','Machines & Robotics','Maschinen-, Robotik-, Sensor- und OPC-UA-Adapter mit Gate 2','GATED'],
+ ['◎','Governed Browser','Browser-, Formular- und Upload-Aktionen mit Ergebnisprüfung','GATED'],
+ ['✉','Communications','E-Mail, Messaging, Voice und Meetings','GATED'],
+ ['◇','Files','Lokale/Cloud-Dateien, Downloads und kontrollierte Uploads','GATED'],
+ ['▣','Calendar','Kalender, Terminplanung und Konfliktprüfung','GATED'],
+ ['↻','Sync Center','Workspace-, Telefon-, Browser- und Provider-Synchronisation','GATED'],
+ ['◈','Governance Kernel','A7SEM, Gate 1, Gate 2, A7SEM Reverse, Re-entry und Emergency Stop','ACTIVE'],
+ ['✓','Glassbox Evidence','Receipts, Decision Passports, Readback und Reconciliation','LOCAL UI'],
+ ['⚙︎','System Settings','Identität, Authority, Limits, Provider und Datenschutz','LOCAL UI']
+];
+const moreModules=[
+ ['⌁','Control Room','Work Items, Gates, Entscheidungen und Evidenz','LOCAL UI'],
+ ['⌘','Executor','Governed Execution und explizite Owner-Autorität','GATED'],
+ ['🛡','PIGA Passport','Identität, Trust und Berechtigungszustände','LOCAL UI'],
+ ['▤','Registry','Objekte, Zustände und Evidenzbezüge','LOCAL UI'],
+ ['◉','AVM','Analyse- und Bewertungsmodule innerhalb der Governance-Grenzen','LOCAL UI'],
+ ['⚙','Policy & Devices','Geräteautorität, Policies und lokale Grenzen','LOCAL UI'],
+ ['📱','Device Pairing','Native Phone-Bridge-Kopplung','NATIVE'],
+ ['◌','PIGA Chat','Chat-Oberfläche; externe Inferenz bis Provider-Verifikation gesperrt','GATED'],
+ ['€','Billing','Entitlement, Stripe und Zahlungsstatus','GATED'],
+ ['↗','Marketing & Vertrieb','Leads, Pipeline, Kampagnen und Follow-ups','LOCAL UI'],
+ ['⌖','Sales Intelligence','Lead-Scoring und Prioritäten auf beobachteten Daten','LOCAL UI'],
+ ['💼','Commercial Automation','Angebote, Lifecycle und Attribution','GATED'],
+ ['▥','Revenue Operations','Import, Enrichment und Connector Gates','GATED'],
+ ['◌','Interface Mesh','Apps, Maschinen, Spatial/XR und sichere Adapter','LOCAL UI'],
+ ['⚙','Hardware Readiness','BLE, Wi-Fi Direct, NFC, USB, Displays und Sensoren','NATIVE']
+];
+function statusClass(s){if(s==='ACTIVE'||s==='NATIVE')return 'pill';if(s==='LOCAL UI')return 'pill local';return 'pill gated'}
+function renderModules(target,items){document.getElementById(target).innerHTML=items.map(x=>`<button class="card" onclick="openModule(${JSON.stringify(x[1])},${JSON.stringify(x[2])},${JSON.stringify(x[3])})"><span class="ico">${x[0]}</span><span><strong>${x[1]}</strong><small>${x[2]}</small></span><span class="${statusClass(x[3])}">${x[3]}</span></button>`).join('')}
+function showPanel(id){document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));document.getElementById('nav-'+id)?.classList.add('active');window.scrollTo(0,0);if(id==='evidence'||id==='home')refreshStatus()}
+function openModule(title,body,state){document.getElementById('sheetTitle').textContent=title;document.getElementById('sheetBody').innerHTML=`<div class="detail"><b>Status: ${state}</b><small>${body}</small></div><div class="detail"><b>A7SEM → A7SEM Reverse</b><small>Vor einer externen Wirkung muss der Zielzustand klassifiziert und autorisiert sein; danach wird das beobachtete Resultat gegen Ziel, Governance und Evidenz zurückgeprüft.</small></div>`;document.getElementById('sheetBack').classList.add('on')}
+function closeSheet(){document.getElementById('sheetBack').classList.remove('on')}
+function nativeCall(name){try{if(window.PigaNative&&typeof window.PigaNative[name]==='function'){window.PigaNative[name]();return}alert('Native Funktion nicht verfügbar.')}catch(e){alert('Native Funktion blockiert: '+e)}}
+function emergencyStop(){if(!confirm('Emergency Stop aktivieren? Master Autonomy wird ausgeschaltet und die native Runtime gestoppt.'))return;try{window.PigaNative.emergencyStop();refreshStatus()}catch(e){alert('Emergency Stop konnte nicht bestätigt werden.')}}
+function refreshStatus(){try{const s=JSON.parse(window.PigaNative.status());window.__piga=s;document.getElementById('nativeDot').className='dot'+(s.emergencyStop?' bad':'');document.getElementById('nativeState').textContent=s.emergencyStop?'EMERGENCY STOP':'LOCAL RUNTIME';document.getElementById('pairMetric').textContent=s.paired?'YES':'NO';document.getElementById('runtimeMetric').textContent=(s.runtime||'OFF').replace('NOT_STARTED','OFF').slice(0,8);document.getElementById('pairDetail').textContent=s.paired?'Native Pairing-Receipt vorhanden':'Noch kein verifiziertes lokales Pairing';document.getElementById('pairPill').textContent=s.paired?'PAIRED':'NOT PAIRED';document.getElementById('pairPill').className=s.paired?'pill':'pill gated';document.getElementById('runtimeDetail').textContent=s.runtime||'NOT_STARTED';document.getElementById('runtimePill').textContent=(s.runtime||'UNKNOWN').slice(0,16);document.getElementById('runtimePill').className=(s.runtime||'').includes('RUN')||(s.runtime||'').includes('START')?'pill':'pill gated';document.getElementById('stopPill').textContent=s.emergencyStop?'ON':'OFF';document.getElementById('stopPill').className=s.emergencyStop?'pill gated':'pill';document.getElementById('identityDetail').textContent=(s.packageId||'com.pigafactory.app')+' · '+(s.version||'1.0');}catch(e){document.getElementById('nativeDot').className='dot bad';document.getElementById('nativeState').textContent='NATIVE READBACK ERROR'}}
+window.pigaRefreshNativeStatus=refreshStatus;
+renderModules('factoryCards',factoryModules);renderModules('moreCards',moreModules);refreshStatus();
+</script>
+</body>
+</html>
