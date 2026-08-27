@@ -47,13 +47,26 @@ def main() -> int:
     assert "isShrinkResources = true" in gradle
     assert "androidx.work:work-runtime-ktx:2.11.2" in gradle
 
+    # The orchestration contract is evidence-only (`productionAuthorized=false`).
+    # Its verifier must remain present and deterministic, but the current
+    # Enterprise bridge must not expose that capability as an executable local
+    # effect until the authoritative server registers/admit its scope.
     command_type = contract["command"]["type"]
     scope = contract["command"]["capabilityScope"]
-    assert command_type in bridge
-    assert scope in bridge
-    assert "expectedPlanSha256" in bridge
-    assert "OrchestrationPlanVerifier" in bridge
+    assert contract["invariants"]["productionAuthorized"] is False
+    assert command_type not in bridge
+    assert scope not in bridge
+    assert 'type != "local_notification"' in bridge
+    assert 'scope != "pocket.notification"' in bridge
+    assert "BridgeServerProtocolPolicy" in bridge
+    assert "admissionPath" in bridge
+    assert "admissionCommitPath" in bridge
+    assert "X-PIGA-Counter" in bridge
+    assert "X-PIGA-Request-Id" in bridge
+    assert "X-PIGA-Control-Plane-Origin" in bridge
 
+    for required in contract["receiptRequired"]:
+        assert required in verifier
     assert "gate2AfterFrontier" in verifier
     assert "gate2AfterRuntime" in verifier
     assert "production_authority_forbidden" in verifier
