@@ -8,11 +8,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "io.piga.phonebridge.mobile"
+        applicationId = "com.pigafactory.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.2.0"
+        versionCode = 100
+        versionName = "1.0.0-preview"
 
         vectorDrawables {
             useSupportLibrary = false
@@ -25,7 +25,6 @@ android {
 
     buildTypes {
         getByName("debug") {
-            applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
         getByName("release") {
