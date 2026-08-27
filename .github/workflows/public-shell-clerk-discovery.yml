@@ -1,4 +1,4 @@
-name: PIGA Public Shell Clerk Discovery
+name: PIGA Configured Upstream Probe
 
 on:
   push:
@@ -13,33 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect public PIGA Pocket shell for embedded Clerk production config
+      - name: Probe configured production API through governed edge
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/piga-shell && mkdir -p /tmp/piga-shell
-          curl -fsSL https://pigapocket.com/ -o /tmp/piga-shell/index.html
-          echo '=== INDEX SCRIPT SOURCES ==='
-          grep -Eo 'src="[^"]+\.js[^\"]*"' /tmp/piga-shell/index.html | sed -E 's/^src="//; s/"$//' | tee /tmp/piga-shell/scripts.txt || true
-          python3 - <<'PY'
-          from pathlib import Path
-          import urllib.parse, urllib.request, re
-          base='https://pigapocket.com/'
-          idx=Path('/tmp/piga-shell/index.html').read_text(errors='ignore')
-          urls=[]
-          for src in re.findall(r'src=["\']([^"\']+\.js[^"\']*)["\']', idx):
-              urls.append(urllib.parse.urljoin(base,src))
-          for i,u in enumerate(urls):
-              try:
-                  data=urllib.request.urlopen(u,timeout=15).read()
-                  Path(f'/tmp/piga-shell/script-{i}.js').write_bytes(data)
-                  print(f'FETCHED {u} bytes={len(data)}')
-              except Exception as e:
-                  print(f'FAILED {u}: {e}')
-          PY
-          echo '=== CLERK CONFIG HITS ==='
-          grep -RaoE 'pk_live_[A-Za-z0-9_-]+' /tmp/piga-shell || true
-          grep -RaoE 'https://[A-Za-z0-9.-]*(clerk|accounts)[A-Za-z0-9./?=_-]*' /tmp/piga-shell || true
-          grep -RaoE 'EXPO_PUBLIC_CLERK_[A-Z_]+' /tmp/piga-shell || true
-          echo '=== HEALTH ==='
-          curl -sS -i https://pigapocket.com/healthz | head -80
+          for path in /healthz /api/health; do
+            echo "=== GET https://pigapocket.com${path} ==="
+            curl -sS -D /tmp/headers -o /tmp/body -w 'status=%{http_code}\n' "https://pigapocket.com${path}" || true
+            sed -n '1,80p' /tmp/headers
+            head -c 1200 /tmp/body || true
+            echo
+          done
+          echo '=== POST challenge invalid body ==='
+          curl -sS -D /tmp/headers -o /tmp/body -w 'status=%{http_code}\n' -X POST -H 'content-type: application/json' --data '{}' https://pigapocket.com/api/bridge/pairing/challenge || true
+          sed -n '1,80p' /tmp/headers
+          head -c 1200 /tmp/body || true
+          echo
+          echo '=== POST confirm invalid body ==='
+          curl -sS -D /tmp/headers -o /tmp/body -w 'status=%{http_code}\n' -X POST -H 'content-type: application/json' --data '{}' https://pigapocket.com/api/bridge/pairing/confirm || true
+          sed -n '1,80p' /tmp/headers
+          head -c 1200 /tmp/body || true
+          echo
