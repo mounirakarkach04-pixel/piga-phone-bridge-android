@@ -1,0 +1,42 @@
+name: PIGA Enterprise Origin Discovery
+
+on:
+  push:
+    branches:
+      - ops/replit-enterprise-origin-discovery-20260827
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe likely current Enterprise deployment origins
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=(
+            piga-pocket-enterprise.replit.app
+            piga-pocket.replit.app
+            piga-pocket-enterprise-mounirakarkach04.replit.app
+            piga-pocket-mounirakarkach04.replit.app
+            piga-pocket-enterprise-mounirakarkach04-pixel.replit.app
+            piga-pocket-mounirakarkach04-pixel.replit.app
+          )
+          for host in "${candidates[@]}"; do
+            echo "=== https://$host ==="
+            code=$(curl -L --silent --show-error --max-time 12 -o /tmp/body -w '%{http_code}' "https://$host/api/healthz" || true)
+            echo "healthz=$code"
+            head -c 500 /tmp/body 2>/dev/null || true
+            echo
+            code=$(curl --silent --show-error --max-time 12 -X POST -H 'content-type: application/json' --data '{}' -o /tmp/body -w '%{http_code}' "https://$host/api/bridge/pairing/challenge" || true)
+            echo "challenge=$code"
+            head -c 500 /tmp/body 2>/dev/null || true
+            echo
+            code=$(curl --silent --show-error --max-time 12 -X POST -H 'content-type: application/json' --data '{}' -o /tmp/body -w '%{http_code}' "https://$host/api/bridge/pairing/confirm" || true)
+            echo "confirm=$code"
+            head -c 500 /tmp/body 2>/dev/null || true
+            echo
+          done
