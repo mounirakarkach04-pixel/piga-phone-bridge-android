@@ -35,6 +35,8 @@ class PairingActivity : Activity() {
     private lateinit var confirmButton: Button
     private var pairingId: String? = null
     private var challenge: String? = null
+    private var pairingServerPublicKey: String? = null
+    private var pairingServerKeyId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,14 +51,12 @@ class PairingActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(16, 8, 16, 8)
         }
-
         val subtitle = TextView(this).apply {
             text = "Dieses Handy sicher verbinden"
             textSize = 17f
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(16, 0, 16, 28)
         }
-
         status = TextView(this).apply {
             textSize = 18f
             gravity = Gravity.CENTER_HORIZONTAL
@@ -67,47 +67,36 @@ class PairingActivity : Activity() {
             }
             setPadding(16, 16, 16, 24)
         }
-
         val securityNote = TextView(this).apply {
             text = "Dein privater Geräteschlüssel bleibt geschützt im Android Keystore und verlässt dieses Handy nicht."
             textSize = 14f
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(16, 0, 16, 24)
         }
-
         pairingCodeInput = EditText(this).apply {
             hint = "6-stelliger Freigabecode"
             inputType = InputType.TYPE_CLASS_NUMBER
             setSingleLine(true)
             isEnabled = false
         }
-
         challengeButton = Button(this).apply {
             text = if (alreadyPaired) "Neu koppeln" else "Dieses Handy verbinden"
             isAllCaps = false
             setOnClickListener { requestChallenge() }
         }
-
         val pocketButton = Button(this).apply {
             text = "PIGA Pocket öffnen"
             isAllCaps = false
             setOnClickListener {
-                startActivity(
-                    Intent(
-                        Intent.ACTION_VIEW,
-                        Uri.parse(ControlPlaneResolver.CANONICAL_CONTROL_PLANE),
-                    ),
-                )
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ControlPlaneResolver.CANONICAL_CONTROL_PLANE)))
             }
         }
-
         confirmButton = Button(this).apply {
             text = "Sicher koppeln"
             isAllCaps = false
             isEnabled = false
             setOnClickListener { confirmPairing() }
         }
-
         val backButton = Button(this).apply {
             text = "Zurück zu PIGA"
             isAllCaps = false
@@ -128,16 +117,9 @@ class PairingActivity : Activity() {
             addView(confirmButton, fullWidth())
             addView(backButton, fullWidth())
         }
-
         setContentView(ScrollView(this).apply {
             isFillViewport = true
-            addView(
-                content,
-                ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
+            addView(content, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         })
     }
 
@@ -147,6 +129,8 @@ class PairingActivity : Activity() {
         confirmButton.isEnabled = false
         pairingId = null
         challenge = null
+        pairingServerPublicKey = null
+        pairingServerKeyId = null
         status.text = "1 von 3 · Sichere Verbindung wird vorbereitet …"
 
         Thread {
@@ -156,7 +140,6 @@ class PairingActivity : Activity() {
                 require(prefs.edit().putString("base_url", root).commit()) {
                     "Unable to persist canonical control plane."
                 }
-
                 val body = JSONObject()
                     .put("deviceId", ensureDeviceId())
                     .put("publicKey", getPublicKeyBase64())
@@ -164,15 +147,20 @@ class PairingActivity : Activity() {
                 val response = postJson("$root/api/bridge/pairing/challenge", body)
                 val pid = response.getString("pairingId")
                 val chal = response.getString("challenge")
+                val serverPublicKey = response.getString("serverPublicKey").trim()
+                val serverKeyId = response.getString("serverKeyId").trim()
                 require(pid.isNotBlank() && chal.isNotBlank()) { "Invalid challenge response." }
+                require(serverPublicKey.isNotBlank() && serverKeyId.isNotBlank()) { "Pairing server identity missing." }
+                validateExistingServerPin(serverPublicKey, serverKeyId)
 
                 pairingId = pid
                 challenge = chal
+                pairingServerPublicKey = serverPublicKey
+                pairingServerKeyId = serverKeyId
                 prefs.edit().putBoolean("paired", false).remove("pairing_id").apply()
 
                 runOnUiThread {
-                    status.text =
-                        "2 von 3 · Freigabe bestätigen\n\nÖffne PIGA Pocket, bestätige die Gerätefreigabe und gib anschließend den 6-stelligen Code hier ein."
+                    status.text = "2 von 3 · Freigabe bestätigen\n\nÖffne PIGA Pocket, bestätige die Gerätefreigabe und gib anschließend den 6-stelligen Code hier ein."
                     pairingCodeInput.isEnabled = true
                     pairingCodeInput.requestFocus()
                     challengeButton.text = "Neue Kopplungsanfrage"
@@ -180,6 +168,10 @@ class PairingActivity : Activity() {
                     confirmButton.isEnabled = true
                 }
             } catch (e: Exception) {
+                pairingId = null
+                challenge = null
+                pairingServerPublicKey = null
+                pairingServerKeyId = null
                 runOnUiThread {
                     status.text = friendlyError(e)
                     challengeButton.text = "Erneut versuchen"
@@ -198,6 +190,14 @@ class PairingActivity : Activity() {
         }
         val chal = challenge ?: run {
             status.text = "Die Gerätefreigabe ist nicht mehr gültig. Bitte erneut verbinden."
+            return
+        }
+        val expectedServerPublicKey = pairingServerPublicKey ?: run {
+            status.text = "Die Serveridentität fehlt. Bitte die Gerätefreigabe neu anfordern."
+            return
+        }
+        val expectedServerKeyId = pairingServerKeyId ?: run {
+            status.text = "Die Serveridentität fehlt. Bitte die Gerätefreigabe neu anfordern."
             return
         }
         val code = pairingCodeInput.text.toString().trim()
@@ -219,11 +219,7 @@ class PairingActivity : Activity() {
                 val signer = Signature.getInstance("SHA256withECDSA")
                 signer.initSign(entry.privateKey)
                 signer.update(signingPayload.toByteArray(Charsets.UTF_8))
-                val signature = Base64.encodeToString(
-                    signer.sign(),
-                    Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
-                )
-
+                val signature = Base64.encodeToString(signer.sign(), Base64.NO_WRAP)
                 val body = JSONObject()
                     .put("deviceId", ensureDeviceId())
                     .put("pairingId", pid)
@@ -231,28 +227,29 @@ class PairingActivity : Activity() {
                     .put("signature", signature)
                 val response = postJson("$root/api/bridge/pairing/confirm", body)
                 val confirmedPairingId = response.optString("pairingId", pid)
-                require(confirmedPairingId == pid) {
-                    "Pairing confirmation returned unexpected pairingId."
-                }
+                val confirmedServerPublicKey = response.getString("serverPublicKey").trim()
+                val confirmedServerKeyId = response.getString("serverKeyId").trim()
+                require(confirmedPairingId == pid) { "Pairing confirmation returned unexpected pairingId." }
+                require(confirmedServerPublicKey == expectedServerPublicKey) { "Server public key changed during pairing." }
+                require(confirmedServerKeyId == expectedServerKeyId) { "Server key id changed during pairing." }
+                validateExistingServerPin(confirmedServerPublicKey, confirmedServerKeyId)
                 require(
                     prefs.edit()
                         .putBoolean("paired", true)
                         .putString("pairing_id", pid)
                         .putString("base_url", root)
+                        .putString("server_public_key", confirmedServerPublicKey)
+                        .putString("server_key_id", confirmedServerKeyId)
+                        .putLong("bridge_runtime_counter", 0L)
                         .commit(),
                 ) { "Unable to persist paired state." }
 
                 runOnUiThread {
                     pairingCodeInput.setText("")
                     pairingCodeInput.isEnabled = false
-                    status.text =
-                        "Sicher gekoppelt. PIGA startet jetzt den geschützten Gerätekanal."
+                    status.text = "Sicher gekoppelt. PIGA startet jetzt den geschützten Gerätekanal."
                     val service = Intent(this@PairingActivity, BridgeService::class.java)
-                    if (Build.VERSION.SDK_INT >= 26) {
-                        startForegroundService(service)
-                    } else {
-                        startService(service)
-                    }
+                    if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
                     confirmButton.isEnabled = false
                     challengeButton.text = "Neu koppeln"
                     challengeButton.isEnabled = true
@@ -267,21 +264,29 @@ class PairingActivity : Activity() {
         }.start()
     }
 
+    private fun validateExistingServerPin(publicKey: String, keyId: String) {
+        val pinnedPublicKey = prefs.getString("server_public_key", null)?.trim()
+        val pinnedKeyId = prefs.getString("server_key_id", null)?.trim()
+        if (!pinnedPublicKey.isNullOrBlank()) {
+            require(pinnedPublicKey == publicKey) { "Server public key differs from the previously paired identity." }
+        }
+        if (!pinnedKeyId.isNullOrBlank()) {
+            require(pinnedKeyId == keyId) { "Server key id differs from the previously paired identity." }
+        }
+    }
+
     private fun friendlyError(error: Exception): String {
         val raw = error.message.orEmpty()
         return when {
             raw.contains("API_ORIGIN_NOT_ADMITTED", ignoreCase = true) ->
-                "PIGA ist erreichbar, aber der sichere API-Dienst ist momentan noch nicht freigegeben. Die App selbst ist erreichbar; die Serverfreigabe wird benötigt."
-            raw.contains("HTTP 401", ignoreCase = true) ||
-                raw.contains("HTTP 403", ignoreCase = true) ->
+                "PIGA ist erreichbar, aber der sichere API-Dienst ist momentan noch nicht freigegeben. Die Serverfreigabe wird benötigt."
+            raw.contains("HTTP 401", ignoreCase = true) || raw.contains("HTTP 403", ignoreCase = true) ->
                 "Die Gerätefreigabe wurde nicht autorisiert. Bitte PIGA Pocket öffnen, anmelden und die Freigabe erneut bestätigen."
             Regex("HTTP 5\\d\\d", RegexOption.IGNORE_CASE).containsMatchIn(raw) ->
                 "Der sichere PIGA-Dienst ist momentan nicht verfügbar. Bitte erneut versuchen."
-            raw.contains("timed out", ignoreCase = true) ||
-                raw.contains("timeout", ignoreCase = true) ->
+            raw.contains("timed out", ignoreCase = true) || raw.contains("timeout", ignoreCase = true) ->
                 "Die Verbindung hat zu lange gedauert. Bitte Internetverbindung prüfen und erneut versuchen."
-            else ->
-                "Die sichere Verbindung konnte nicht abgeschlossen werden. Bitte erneut versuchen."
+            else -> "Die sichere Verbindung konnte nicht abgeschlossen werden. Bitte erneut versuchen."
         }
     }
 
@@ -289,37 +294,26 @@ class PairingActivity : Activity() {
         val stored = prefs.getString("device_id", null)?.trim()
         if (!stored.isNullOrBlank()) return stored
         val created = UUID.randomUUID().toString()
-        require(prefs.edit().putString("device_id", created).commit()) {
-            "Unable to persist device identity"
-        }
+        require(prefs.edit().putString("device_id", created).commit()) { "Unable to persist device identity" }
         return created
     }
 
     private fun ensureKey() {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         if (ks.containsAlias(alias)) return
-        val generator = KeyPairGenerator.getInstance(
-            KeyProperties.KEY_ALGORITHM_EC,
-            "AndroidKeyStore",
-        )
+        val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
         generator.initialize(
-            KeyGenParameterSpec.Builder(
-                alias,
-                KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
-            )
+            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY)
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
                 .setDigests(KeyProperties.DIGEST_SHA256)
-                .build(),
+                .build()
         )
         generator.generateKeyPair()
     }
 
     private fun getPublicKeyBase64(): String {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return Base64.encodeToString(
-            ks.getCertificate(alias).publicKey.encoded,
-            Base64.NO_WRAP,
-        )
+        return Base64.encodeToString(ks.getCertificate(alias).publicKey.encoded, Base64.NO_WRAP)
     }
 
     private fun postJson(url: String, body: JSONObject): JSONObject {
@@ -331,23 +325,17 @@ class PairingActivity : Activity() {
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
         }
-        connection.outputStream.use {
-            it.write(body.toString().toByteArray(Charsets.UTF_8))
-        }
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
         connection.disconnect()
-        if (code !in 200..299) {
-            throw IllegalStateException("HTTP $code ${text.take(240)}")
-        }
+        if (code !in 200..299) throw IllegalStateException("HTTP $code ${text.take(240)}")
         return if (text.isBlank()) JSONObject() else JSONObject(text)
     }
 
     private fun fullWidth() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT,
-    ).apply {
-        bottomMargin = 12
-    }
+    ).apply { bottomMargin = 12 }
 }

@@ -10,15 +10,19 @@ import org.junit.Test
 
 class CommandReceiptContractTest {
     @Test
-    fun ackPathIncludesAckSuffix() {
+    fun commandLifecyclePathsMatchAuthoritativeServer() {
         assertEquals(
             "/api/bridge/devices/device-1/commands/command-9/ack",
             CommandReceiptContract.ackPath("device-1", "command-9")
         )
-    }
-
-    @Test
-    fun resultPathIncludesResultSuffix() {
+        assertEquals(
+            "/api/bridge/devices/device-1/commands/command-9/admission",
+            CommandReceiptContract.admissionPath("device-1", "command-9")
+        )
+        assertEquals(
+            "/api/bridge/devices/device-1/commands/command-9/admission/commit",
+            CommandReceiptContract.admissionCommitPath("device-1", "command-9")
+        )
         assertEquals(
             "/api/bridge/devices/device-1/commands/command-9/result",
             CommandReceiptContract.resultPath("device-1", "command-9")
@@ -35,7 +39,9 @@ class CommandReceiptContractTest {
             createdAtMs = 123456789L,
             jobId = "job-1",
             subjobId = "subjob-1",
-            verifiedPlanHash = "a".repeat(64)
+            verifiedPlanHash = "a".repeat(64),
+            effectId = "effect-9",
+            effectNonce = "effect-nonce-9"
         )
         val restored = CommandReceiptContract.decodePendingResult(
             CommandReceiptContract.encodePendingResult(original)
@@ -55,6 +61,23 @@ class CommandReceiptContractTest {
         assertNull(restored.jobId)
         assertNull(restored.subjobId)
         assertNull(restored.verifiedPlanHash)
+        assertNull(restored.effectId)
+        assertNull(restored.effectNonce)
+    }
+
+    @Test
+    fun legacyEightFieldPendingResultStillDecodesWithoutInventingEffectIdentity() {
+        val restored = CommandReceiptContract.decodePendingResult(
+            listOf(
+                "command-9", "nonce-7", "succeeded", "123456789",
+                "job-1", "subjob-1", "${"a".repeat(64)}", "legacy detail"
+            ).joinToString("\n")
+        )
+        assertNotNull(restored)
+        requireNotNull(restored)
+        assertEquals("job-1", restored.jobId)
+        assertNull(restored.effectId)
+        assertNull(restored.effectNonce)
     }
 
     @Test
