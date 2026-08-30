@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Probe capability object schema without creating authority
+      - name: Create isolated disposable challenge without confirming authority
         shell: bash
         run: |
           set -euo pipefail
@@ -30,7 +30,12 @@ jobs:
             'deviceId': sys.argv[1],
             'publicKey': sys.argv[2],
             'keyAlgorithm': 'EC-P256-SHA256',
-            'capabilities': {}
+            'capabilities': {
+              'scopes': [
+                'pocket.notification','pocket.clipboard.write','pocket.intent.url',
+                'pocket.tts','pocket.app.launch','pocket.share.text','pocket.orchestration.verify'
+              ]
+            }
           }))
           PY
           curl --silent --show-error --location --max-redirs 3 --max-time 25 \
@@ -51,8 +56,8 @@ jobs:
           try: body=json.loads(raw)
           except Exception: body={'raw':raw[:1000]}
           receipt={
-            'schema':'piga.pairing-capability-object-schema-probe.v1',
-            'governance':'A7SEM -> bounded incomplete capability object -> evidence -> A7SEM Reverse',
+            'schema':'piga.pairing-admitted-challenge-schema-probe.v1',
+            'governance':'A7SEM -> isolated disposable unconfirmed challenge -> evidence -> A7SEM Reverse',
             'authority':'none','externalActionExecuted':False,
             'http':code,'effectiveUrl':lines[1] if len(lines)>1 else None,
             'responseKeys':sorted(body.keys()) if isinstance(body,dict) else [],
