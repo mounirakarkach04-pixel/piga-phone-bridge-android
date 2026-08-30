@@ -25,7 +25,14 @@ jobs:
           set -euo pipefail
           mkdir -p evidence
           base='https://piga-executor-client.replit.app'
-          for spec in 'api-health:/api/health' 'api-healthz:/api/healthz' 'root:/'; do
+          for spec in \
+            'api-health:/api/health' \
+            'api-healthz:/api/healthz' \
+            'pairing-challenge:/api/bridge/pairing/challenge' \
+            'pairing-status:/api/bridge/pairing/status' \
+            'device-health:/api/device-control/health' \
+            'factory-next:/api/factory/trigger/next' \
+            'root:/'; do
             name="${spec%%:*}"
             path="${spec#*:}"
             curl --silent --show-error --location --max-redirs 3 --max-time 25 \
@@ -44,7 +51,6 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from urllib.parse import urlparse
 
           root = Path('evidence')
           def read(name):
@@ -74,13 +80,18 @@ jobs:
               and health.get('additionalEngineCreated') is False
               and health.get('a7semReverseIsEngine') is False
           )
+          endpoint_names = ['pairing-challenge','pairing-status','device-health','factory-next']
+          endpoint_meta = {name: {'meta': meta(name), 'body': body_json(name)} for name in endpoint_names}
+          exposed = [name for name, item in endpoint_meta.items() if item['meta']['http'] not in {0,404}]
           receipt = {
-              'schema': 'piga.backend-origin-candidate.v1',
+              'schema': 'piga.backend-origin-candidate.v2',
               'governance': 'A7SEM -> read-only candidate probe -> evidence -> A7SEM Reverse',
               'authority': 'none',
               'candidateOrigin': 'https://piga-executor-client.replit.app',
               'apiHealth': {'meta': health_meta, 'body': health},
               'apiHealthz': {'meta': meta('api-healthz'), 'body': body_json('api-healthz')},
+              'endpointEvidence': endpoint_meta,
+              'exposedCandidateEndpoints': exposed,
               'root': {'meta': meta('root')},
               'result': 'PASS' if contract_ok else 'BLOCK',
               'reason': 'CONTROL_PLANE_CONTRACT_ADMITTED' if contract_ok else 'CONTROL_PLANE_CONTRACT_NOT_PROVEN',
@@ -90,6 +101,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
               fh.write(f"result={receipt['result']}\n")
               fh.write(f"reason={receipt['reason']}\n")
+              fh.write(f"exposed={','.join(exposed)}\n")
           PY
 
       - name: Publish summary
@@ -102,6 +114,7 @@ jobs:
             echo '- Authority: none'
             echo "- Result: ${{ steps.assess.outputs.result || 'UNKNOWN' }}"
             echo "- Reason: ${{ steps.assess.outputs.reason || 'receipt unavailable' }}"
+            echo "- Exposed candidate endpoints: ${{ steps.assess.outputs.exposed || 'none' }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload evidence
