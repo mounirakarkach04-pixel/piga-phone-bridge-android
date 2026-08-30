@@ -1,0 +1,53 @@
+name: PIGA Stable Vercel Project Domain Probe
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/vercel-project-domain-probe.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe stable project domains
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          for base in \
+            https://piga-pocket-enterprise-api-server.vercel.app \
+            https://piga-pocket-enterprise-api-server-oq2o.vercel.app \
+            https://piga-pocket-enterprise-control-plane.vercel.app; do
+            name=$(printf '%s' "$base" | sed -E 's#https://##; s#\.vercel\.app##')
+            for path in /api/health /api/healthz /; do
+              key=$(printf '%s' "$path" | sed 's#/#-#g; s#^-##; s#-$#root#')
+              curl --silent --show-error --location --max-redirs 3 --max-time 25 \
+                -D "evidence/${name}-${key}.headers" \
+                -o "evidence/${name}-${key}.body" \
+                -w '%{http_code}\n%{url_effective}\n' \
+                "${base}${path}" > "evidence/${name}-${key}.meta" || true
+            done
+          done
+      - name: Print bounded evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in evidence/*-api-health.meta; do
+            echo "=== $f ==="
+            cat "$f"
+            body="${f%.meta}.body"
+            head -c 1200 "$body" || true
+            echo
+          done
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-stable-vercel-project-domains-${{ github.run_id }}
+          path: evidence/
+          retention-days: 7
