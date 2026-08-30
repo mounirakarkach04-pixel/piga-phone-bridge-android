@@ -1,7 +1,7 @@
 {
   "schema": "piga.control-plane-discovery.v1",
-  "epoch": 2,
-  "controlPlaneUrl": "https://pigapocket.com",
+  "epoch": 3,
+  "controlPlaneUrl": "https://app.pigapocket.com",
   "governance": {
     "mode": "fail-closed",
     "authority": "repository-controlled-canonical-pointer",
