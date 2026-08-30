@@ -30,6 +30,7 @@ jobs:
             'api-healthz:/api/healthz' \
             'pairing-challenge:/api/bridge/pairing/challenge' \
             'pairing-status:/api/bridge/pairing/status' \
+            'first-owner-bootstrap:/api/governance/first-owner/bootstrap' \
             'device-health:/api/device-control/health' \
             'factory-next:/api/factory/trigger/next' \
             'root:/'; do
@@ -80,17 +81,18 @@ jobs:
               and health.get('additionalEngineCreated') is False
               and health.get('a7semReverseIsEngine') is False
           )
-          endpoint_names = ['pairing-challenge','pairing-status','device-health','factory-next']
+          endpoint_names = ['pairing-challenge','pairing-status','first-owner-bootstrap','device-health','factory-next']
           endpoint_meta = {name: {'meta': meta(name), 'body': body_json(name)} for name in endpoint_names}
           exposed = [name for name, item in endpoint_meta.items() if item['meta']['http'] not in {0,404}]
           receipt = {
-              'schema': 'piga.backend-origin-candidate.v2',
+              'schema': 'piga.backend-origin-candidate.v3',
               'governance': 'A7SEM -> read-only candidate probe -> evidence -> A7SEM Reverse',
               'authority': 'none',
               'candidateOrigin': 'https://piga-executor-client.replit.app',
               'apiHealth': {'meta': health_meta, 'body': health},
               'apiHealthz': {'meta': meta('api-healthz'), 'body': body_json('api-healthz')},
               'endpointEvidence': endpoint_meta,
+              'firstOwnerRouteExists': meta('first-owner-bootstrap')['http'] not in {0,404},
               'exposedCandidateEndpoints': exposed,
               'root': {'meta': meta('root')},
               'result': 'PASS' if contract_ok else 'BLOCK',
@@ -101,6 +103,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
               fh.write(f"result={receipt['result']}\n")
               fh.write(f"reason={receipt['reason']}\n")
+              fh.write(f"first_owner_route={str(receipt['firstOwnerRouteExists']).lower()}\n")
               fh.write(f"exposed={','.join(exposed)}\n")
           PY
 
@@ -114,6 +117,7 @@ jobs:
             echo '- Authority: none'
             echo "- Result: ${{ steps.assess.outputs.result || 'UNKNOWN' }}"
             echo "- Reason: ${{ steps.assess.outputs.reason || 'receipt unavailable' }}"
+            echo "- First-owner route exists: ${{ steps.assess.outputs.first_owner_route || 'unknown' }}"
             echo "- Exposed candidate endpoints: ${{ steps.assess.outputs.exposed || 'none' }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
