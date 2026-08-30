@@ -1,0 +1,74 @@
+name: PIGA Replit Pairing Response Schema Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/replit-pairing-response-schema-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create isolated disposable challenge
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          openssl ecparam -name prime256v1 -genkey -noout -out /tmp/piga-probe-key.pem
+          openssl ec -in /tmp/piga-probe-key.pem -pubout -outform DER 2>/dev/null | base64 -w0 > /tmp/piga-probe-pub.b64
+          DEVICE_ID="piga-contract-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          PUBLIC_KEY="$(cat /tmp/piga-probe-pub.b64)"
+          python3 - "$DEVICE_ID" "$PUBLIC_KEY" <<'PY' > /tmp/request.json
+          import json, sys
+          print(json.dumps({
+            'deviceId': sys.argv[1],
+            'publicKey': sys.argv[2],
+            'keyAlgorithm': 'EC-P256-SHA256',
+            'capabilities': [
+              'pocket.notification','pocket.clipboard.write','pocket.intent.url',
+              'pocket.tts','pocket.app.launch','pocket.share.text','pocket.orchestration.verify'
+            ]
+          }))
+          PY
+          curl --silent --show-error --location --max-redirs 3 --max-time 25 \
+            -X POST -H 'content-type: application/json' -H 'accept: application/json' \
+            --data-binary @/tmp/request.json \
+            -D evidence/challenge.headers \
+            -o evidence/challenge.body \
+            -w '%{http_code}\n%{url_effective}\n' \
+            'https://piga-executor-client.replit.app/api/bridge/pairing/challenge' > evidence/challenge.meta
+          rm -f /tmp/piga-probe-key.pem /tmp/piga-probe-pub.b64 /tmp/request.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('evidence')
+          lines=[x.strip() for x in (root/'challenge.meta').read_text().splitlines() if x.strip()]
+          code=int(lines[0]) if lines and lines[0].isdigit() else 0
+          raw=(root/'challenge.body').read_text(errors='replace')
+          try: body=json.loads(raw)
+          except Exception: body={'raw':raw[:1000]}
+          receipt={
+            'schema':'piga.pairing-response-schema-probe.v1',
+            'governance':'A7SEM -> isolated disposable challenge -> evidence -> A7SEM Reverse',
+            'authority':'none','externalActionExecuted':False,
+            'http':code,'effectiveUrl':lines[1] if len(lines)>1 else None,
+            'responseKeys':sorted(body.keys()) if isinstance(body,dict) else [],
+            'body':body
+          }
+          (root/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,indent=2,sort_keys=True))
+          PY
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-pairing-response-schema-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
