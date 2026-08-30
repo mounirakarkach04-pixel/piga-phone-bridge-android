@@ -1,0 +1,100 @@
+name: PIGA Vercel Stable Alias Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/vercel-stable-alias-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe stable project aliases read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          cat > evidence/candidates.txt <<'EOF'
+          api-server|https://piga-pocket-enterprise-api-server.vercel.app
+          api-server-oq2o|https://piga-pocket-enterprise-api-server-oq2o.vercel.app
+          control-plane|https://piga-pocket-enterprise-control-plane.vercel.app
+          EOF
+          while IFS='|' read -r name base; do
+            for spec in 'api-health:/api/health' 'healthz:/healthz' 'root:/'; do
+              suffix="${spec%%:*}"
+              path="${spec#*:}"
+              curl --silent --show-error --location --max-redirs 5 --max-time 25 \
+                -D "evidence/${name}-${suffix}.headers" \
+                -o "evidence/${name}-${suffix}.body" \
+                -w '%{http_code}\n%{url_effective}\n' \
+                "${base}${path}" > "evidence/${name}-${suffix}.meta" || true
+            done
+          done < evidence/candidates.txt
+      - name: Assess exact control-plane contract
+        id: assess
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('evidence')
+          out=[]
+          for line in (root/'candidates.txt').read_text().splitlines():
+              name, base = line.split('|',1)
+              def read(s):
+                  p=root/f'{name}-{s}'
+                  return p.read_text(errors='replace') if p.exists() else ''
+              def meta(s):
+                  lines=[x.strip() for x in read(f'{s}.meta').splitlines() if x.strip()]
+                  return {'http': int(lines[0]) if lines and lines[0].isdigit() else 0,
+                          'effectiveUrl': lines[1] if len(lines)>1 else None}
+              def body_json(s):
+                  try: return json.loads(read(f'{s}.body'))
+                  except Exception: return None
+              hm=meta('api-health'); h=body_json('api-health')
+              ok=(hm['http']==200 and isinstance(h,dict)
+                  and h.get('schema')=='piga.control-plane-health.v1'
+                  and h.get('status') in {'ALLOW','IDLE','HEARTBEAT','AUTO_STOP'}
+                  and h.get('authority')=='none'
+                  and h.get('engineCount')==5
+                  and h.get('additionalEngineCreated') is False
+                  and h.get('a7semReverseIsEngine') is False)
+              out.append({'name':name,'base':base,'apiHealth':{'meta':hm,'body':h},
+                          'healthz':{'meta':meta('healthz'),'body':body_json('healthz')},
+                          'root':{'meta':meta('root')},'contractOk':ok})
+          admitted=[x['base'] for x in out if x['contractOk']]
+          receipt={'schema':'piga.backend-stable-alias-probe.v1','authority':'none','nonBudget':True,
+                   'governance':'A7SEM -> read-only stable alias probes -> evidence -> A7SEM Reverse',
+                   'result':'PASS' if admitted else 'BLOCK','admittedOrigins':admitted,'candidates':out}
+          (root/'stable-alias-receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh:
+              fh.write(f"result={receipt['result']}\n")
+              fh.write(f"admitted={','.join(admitted)}\n")
+          PY
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### PIGA Vercel Stable Aliases'
+            echo '- Governance: A7SEM -> read-only probes -> evidence -> A7SEM Reverse'
+            echo '- Authority: none'
+            echo "- Result: ${{ steps.assess.outputs.result || 'UNKNOWN' }}"
+            echo "- Admitted: ${{ steps.assess.outputs.admitted || 'none' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-vercel-stable-alias-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 7
