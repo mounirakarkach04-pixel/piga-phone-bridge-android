@@ -1,0 +1,49 @@
+name: PIGA Replit Pairing Contract Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/replit-pairing-contract-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe pairing challenge with empty JSON only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          curl --silent --show-error --location --max-redirs 3 --max-time 25 \
+            -X POST -H 'content-type: application/json' -d '{}' \
+            -D evidence/post-empty.headers \
+            -o evidence/post-empty.body \
+            -w '%{http_code}\n%{url_effective}\n' \
+            'https://piga-executor-client.replit.app/api/bridge/pairing/challenge' > evidence/post-empty.meta || true
+          printf '{"schema":"piga.replit-pairing-contract-probe.v1","authority":"none","governance":"A7SEM -> bounded invalid POST -> evidence -> A7SEM Reverse","http":' > evidence/receipt.json
+          code="$(head -n 1 evidence/post-empty.meta | tr -dc '0-9')"
+          printf '%s,"body":' "${code:-0}" >> evidence/receipt.json
+          python3 - <<'PY' >> evidence/receipt.json
+          import json
+          from pathlib import Path
+          raw=Path('evidence/post-empty.body').read_text(errors='replace')
+          try: body=json.loads(raw)
+          except Exception: body=raw[:1000]
+          print(json.dumps(body), end='')
+          PY
+          printf '}\n' >> evidence/receipt.json
+          cat evidence/receipt.json
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-replit-pairing-contract-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
