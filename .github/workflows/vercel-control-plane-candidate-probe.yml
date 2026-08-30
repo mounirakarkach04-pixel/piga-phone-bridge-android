@@ -1,0 +1,130 @@
+name: PIGA Vercel Control Plane Candidate Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/vercel-control-plane-candidate-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe historical Vercel candidates read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          cat > evidence/candidates.txt <<'EOF'
+          api-server|https://piga-pocket-enterpri-git-8cdcff-mounirakarkach04-2133s-projects.vercel.app
+          api-server-oq2o|https://piga-pocket-enterpri-git-cece9b-mounirakarkach04-2133s-projects.vercel.app
+          control-plane|https://piga-pocket-enterpri-git-aecd50-mounirakarkach04-2133s-projects.vercel.app
+          EOF
+
+          while IFS='|' read -r name base; do
+            for spec in 'api-health:/api/health' 'api-healthz:/api/healthz' 'root:/'; do
+              suffix="${spec%%:*}"
+              path="${spec#*:}"
+              curl --silent --show-error --location --max-redirs 3 --max-time 25 \
+                -D "evidence/${name}-${suffix}.headers" \
+                -o "evidence/${name}-${suffix}.body" \
+                -w '%{http_code}\n%{url_effective}\n' \
+                "${base}${path}" > "evidence/${name}-${suffix}.meta" || true
+            done
+          done < evidence/candidates.txt
+
+      - name: Assess PIGA control-plane contract
+        id: assess
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path('evidence')
+          candidates = []
+          for line in (root / 'candidates.txt').read_text().splitlines():
+              if not line.strip():
+                  continue
+              name, base = line.split('|', 1)
+              def text(suffix):
+                  p = root / f'{name}-{suffix}'
+                  return p.read_text(errors='replace') if p.exists() else ''
+              def meta(suffix):
+                  lines = [x.strip() for x in text(f'{suffix}.meta').splitlines() if x.strip()]
+                  return {
+                      'http': int(lines[0]) if lines and lines[0].isdigit() else 0,
+                      'effectiveUrl': lines[1] if len(lines) > 1 else None,
+                  }
+              def json_body(suffix):
+                  try:
+                      return json.loads(text(f'{suffix}.body'))
+                  except Exception:
+                      return None
+
+              health_meta = meta('api-health')
+              health = json_body('api-health')
+              contract_ok = (
+                  health_meta['http'] == 200
+                  and isinstance(health, dict)
+                  and health.get('schema') == 'piga.control-plane-health.v1'
+                  and health.get('status') in {'ALLOW', 'IDLE', 'HEARTBEAT', 'AUTO_STOP'}
+                  and health.get('authority') == 'none'
+                  and health.get('engineCount') == 5
+                  and health.get('additionalEngineCreated') is False
+                  and health.get('a7semReverseIsEngine') is False
+              )
+              candidates.append({
+                  'name': name,
+                  'base': base,
+                  'apiHealth': {'meta': health_meta, 'body': health},
+                  'apiHealthz': {'meta': meta('api-healthz'), 'body': json_body('api-healthz')},
+                  'root': {'meta': meta('root')},
+                  'contractOk': contract_ok,
+              })
+
+          admitted = [c for c in candidates if c['contractOk']]
+          receipt = {
+              'schema': 'piga.backend-origin-candidate.v1',
+              'governance': 'A7SEM -> read-only Vercel probes -> evidence -> A7SEM Reverse',
+              'authority': 'none',
+              'nonBudget': True,
+              'result': 'PASS' if admitted else 'BLOCK',
+              'admittedOrigins': [c['base'] for c in admitted],
+              'candidates': candidates,
+          }
+          (root / 'vercel-candidate-receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(receipt, indent=2, sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f"result={receipt['result']}\n")
+              fh.write(f"admitted={','.join(receipt['admittedOrigins'])}\n")
+          PY
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### PIGA Vercel Control Plane Candidates'
+            echo '- Governance: A7SEM -> read-only probes -> evidence -> A7SEM Reverse'
+            echo '- Authority: none'
+            echo '- Budget: no new paid service'
+            echo "- Result: ${{ steps.assess.outputs.result || 'UNKNOWN' }}"
+            echo "- Admitted: ${{ steps.assess.outputs.admitted || 'none' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-vercel-control-plane-candidates-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 7
