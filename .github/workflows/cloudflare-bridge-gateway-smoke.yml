@@ -1,0 +1,65 @@
+name: PIGA Cloudflare Bridge Gateway Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cloudflare-bridge-gateway-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-bridge-gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe Cloudflare bridge gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          curl --silent --show-error --max-redirs 0 --max-time 25 \
+            -D evidence/bridge.headers \
+            -o evidence/bridge.body \
+            -w '%{http_code}\n' \
+            https://app.pigapocket.com/api/bridge/pairing/challenge > evidence/bridge.meta || true
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          meta = Path('evidence/bridge.meta').read_text(errors='replace').strip().splitlines()
+          code = int(meta[0]) if meta and meta[0].isdigit() else 0
+          headers = Path('evidence/bridge.headers').read_text(errors='replace').lower()
+          body = Path('evidence/bridge.body').read_text(errors='replace')
+          edge = 'x-piga-edge: governed-bridge-gateway' in headers
+          upstream = 'x-piga-bridge-upstream: verified-replit-runtime' in headers
+          governance = 'x-piga-governance:' in headers
+          route_semantics = code in {400, 401, 405}
+          result = 'PASS' if edge and upstream and governance and route_semantics else 'DELAY'
+          receipt = {
+            'schema': 'piga.cloudflare-bridge-gateway-smoke.v1',
+            'governance': 'A7SEM -> bounded public probe -> evidence -> A7SEM Reverse',
+            'authority': 'none',
+            'http': code,
+            'edgeHeader': edge,
+            'upstreamEvidenceHeader': upstream,
+            'governanceHeader': governance,
+            'routeSemantics': route_semantics,
+            'bodyPreview': body[:500],
+            'result': result,
+          }
+          Path('evidence/receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2))
+          if result != 'PASS':
+            raise SystemExit(1)
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-cloudflare-bridge-gateway-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          retention-days: 30
