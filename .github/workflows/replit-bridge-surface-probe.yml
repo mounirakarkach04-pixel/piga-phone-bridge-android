@@ -1,0 +1,59 @@
+name: PIGA Replit Bridge Surface Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/replit-bridge-surface-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe bridge routes with non-effecting invalid identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          base='https://piga-executor-client.replit.app'
+          fake_device='piga-probe-device-do-not-exist'
+          fake_command='piga-probe-command-do-not-exist'
+          probe() {
+            name="$1" method="$2" path="$3" body="${4:-}"
+            args=(--silent --show-error --location --max-redirs 3 --max-time 25 -X "$method" -H 'accept: application/json')
+            if [ -n "$body" ]; then args+=(-H 'content-type: application/json' -d "$body"); fi
+            curl "${args[@]}" -D "evidence/${name}.headers" -o "evidence/${name}.body" -w '%{http_code}\n%{url_effective}\n' "$base$path" > "evidence/${name}.meta" || true
+          }
+          probe pairing-confirm POST '/api/bridge/pairing/confirm' '{}'
+          probe command-poll GET "/api/bridge/devices/$fake_device/commands"
+          probe safety POST "/api/bridge/devices/$fake_device/safety" '{}'
+          probe ack POST "/api/bridge/devices/$fake_device/commands/$fake_command/ack" '{}'
+          probe result POST "/api/bridge/devices/$fake_device/commands/$fake_command/result" '{}'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('evidence'); names=['pairing-confirm','command-poll','safety','ack','result']; out={}
+          for name in names:
+              lines=[x.strip() for x in (root/f'{name}.meta').read_text(errors='replace').splitlines() if x.strip()]
+              code=int(lines[0]) if lines and lines[0].isdigit() else 0
+              raw=(root/f'{name}.body').read_text(errors='replace')
+              try: body=json.loads(raw)
+              except Exception: body=raw[:800]
+              out[name]={'http':code,'effectiveUrl':lines[1] if len(lines)>1 else None,'body':body,'routeExists':code not in (0,404)}
+          receipt={'schema':'piga.replit-bridge-surface.v1','governance':'A7SEM -> bounded invalid/no-effect probes -> evidence -> A7SEM Reverse','authority':'none','nonBudget':True,'routes':out}
+          (root/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,indent=2,sort_keys=True))
+          PY
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-replit-bridge-surface-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
