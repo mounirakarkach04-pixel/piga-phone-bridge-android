@@ -161,6 +161,15 @@ class PairingActivity : Activity() {
                     .put("deviceId", ensureDeviceId())
                     .put("publicKey", getPublicKeyBase64())
                     .put("keyAlgorithm", "EC-P256-SHA256")
+                    .put("capabilities", org.json.JSONArray(listOf(
+                        "pocket.notification",
+                        "pocket.clipboard.write",
+                        "pocket.intent.url",
+                        "pocket.tts",
+                        "pocket.app.launch",
+                        "pocket.share.text",
+                        "pocket.orchestration.verify",
+                    )))
                 val response = postJson("$root/api/bridge/pairing/challenge", body)
                 val pid = response.getString("pairingId")
                 val chal = response.getString("challenge")
