@@ -6,7 +6,7 @@ import java.net.URI
 import java.net.URL
 
 object ControlPlaneResolver {
-    const val CANONICAL_CONTROL_PLANE = "https://pigapocket.com"
+    const val CANONICAL_CONTROL_PLANE = "https://app.pigapocket.com"
 
     private const val DISCOVERY_URL =
         "https://raw.githubusercontent.com/mounirakarkach04-pixel/piga-phone-bridge-android/main/control-plane.json"
@@ -76,7 +76,7 @@ object ControlPlaneResolver {
         require(uri.scheme.equals("https", ignoreCase = true)) {
             "Control plane must use HTTPS"
         }
-        require(uri.host.equals("pigapocket.com", ignoreCase = true)) {
+        require(uri.host.equals("app.pigapocket.com", ignoreCase = true)) {
             "Untrusted control-plane host"
         }
         require(uri.port == -1) { "Non-default control-plane port forbidden" }
