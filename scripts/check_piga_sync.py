@@ -35,7 +35,7 @@ def main() -> int:
     wake = WAKE.read_text(encoding="utf-8")
 
     assert contract["controlPlane"]["gearboxVersion"] == "1.6"
-    assert contract["controlPlane"]["canonicalOrigin"] == "https://pigapocket.com"
+    assert contract["controlPlane"]["canonicalOrigin"] == "https://app.pigapocket.com"
     assert discovery["controlPlaneUrl"] == contract["controlPlane"]["canonicalOrigin"]
     assert discovery["governance"]["mode"] == "fail-closed"
     assert discovery["governance"]["materialChangeRequiresReEntry"] is True
@@ -90,6 +90,7 @@ def main() -> int:
     assert "BLOCKED_NOT_PAIRED" in main
     assert "CANONICAL_CONTROL_PLANE" in resolver
     assert 'require(normalized == CANONICAL_CONTROL_PLANE)' in resolver
+    assert 'app.pigapocket.com' in resolver
 
     assert "RECEIVE_BOOT_COMPLETED" in manifest
     assert ".PigaBridgeApp" in manifest
@@ -99,6 +100,7 @@ def main() -> int:
 
     assert "id-token: write" in wake
     assert 'AUDIENCE="piga-pocket-enterprise"' in wake
+    assert 'test "$ROOT" = "https://app.pigapocket.com"' in wake
     assert '"$ROOT/api/health"' in wake
     assert "piga.control-plane-health.v1" in wake
     assert "payload.get('authority') == 'none'" in wake
@@ -110,7 +112,7 @@ def main() -> int:
     assert "X-PIGA-Trigger-Event: continuous-governance-wake" in wake
     assert '"$ROOT/api/factory/trigger/next"' in wake
 
-    print("PIGA phone/control-plane market-readiness synchronization v0.2.0: PASS")
+    print("PIGA phone/control-plane market-readiness synchronization v0.2.1: PASS")
     return 0
 
 
