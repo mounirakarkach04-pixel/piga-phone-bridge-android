@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Fetch Expo manifest and Android bundle read-only
+      - name: Fetch Expo manifest and declared Android launch asset read-only
         shell: bash
         run: |
           set -euo pipefail
@@ -29,16 +29,34 @@ jobs:
             -w '%{http_code}\n%{url_effective}\n%{content_type}\n' \
             "$base/" > evidence/manifest.meta || true
 
-          for path in \
-            '/index.bundle?platform=android&dev=true&hot=false&lazy=false&transform.engine=hermes' \
-            '/index.bundle?platform=android&dev=false&hot=false&lazy=false&transform.engine=hermes'; do
-            name=$(printf '%s' "$path" | grep -q 'dev=true' && echo bundle-dev || echo bundle-prod)
-            curl --silent --show-error --location --max-redirs 3 --max-time 60 \
-              -D "evidence/${name}.headers" \
-              -o "evidence/${name}.body" \
-              -w '%{http_code}\n%{url_effective}\n%{content_type}\n' \
-              "$base$path" > "evidence/${name}.meta" || true
-          done
+          python3 - <<'PY' > evidence/launch-url.txt
+          import json
+          from pathlib import Path
+          data = json.loads(Path('evidence/manifest.body').read_text())
+          candidates = []
+          launch = data.get('launchAsset')
+          if isinstance(launch, dict) and isinstance(launch.get('url'), str):
+              candidates.append(launch['url'])
+          assets = data.get('assets')
+          if isinstance(assets, list):
+              for asset in assets:
+                  if isinstance(asset, dict) and isinstance(asset.get('url'), str) and 'bundle' in asset['url']:
+                      candidates.append(asset['url'])
+          if not candidates:
+              raise SystemExit('No Expo launch asset URL found')
+          print(candidates[0])
+          PY
+
+          launch_url=$(cat evidence/launch-url.txt)
+          case "$launch_url" in
+            https://piga-executor-client.replit.app/*) ;;
+            *) echo 'Launch asset escaped admitted Replit origin' >&2; exit 2 ;;
+          esac
+          curl --silent --show-error --location --max-redirs 3 --max-time 60 \
+            -D evidence/launch-asset.headers \
+            -o evidence/launch-asset.body \
+            -w '%{http_code}\n%{url_effective}\n%{content_type}\n%{size_download}\n' \
+            "$launch_url" > evidence/launch-asset.meta || true
 
       - name: Extract bounded public endpoint evidence
         shell: bash
@@ -50,46 +68,51 @@ jobs:
 
           root = Path('evidence')
           texts = []
-          for name in ('manifest.body', 'bundle-dev.body', 'bundle-prod.body'):
+          for name in ('manifest.body', 'launch-asset.body'):
               p = root / name
-              if p.exists() and p.stat().st_size <= 50_000_000:
+              if p.exists() and p.stat().st_size <= 80_000_000:
                   texts.append((name, p.read_text(errors='replace')))
 
           url_re = re.compile(r'https?://[^\s"\'<>\\)]+')
-          interesting = []
+          findings = []
           seen = set()
-          keywords = ('api', 'pair', 'bridge', 'piga', 'replit', 'vercel', 'health', 'origin')
+          endpoint_keywords = ('api', 'pair', 'bridge', 'piga', 'replit', 'vercel', 'health', 'origin')
+          snippet_keywords = re.compile(r'EXPO_PUBLIC_[A-Z0-9_]*(?:API|ORIGIN|PAIR|BRIDGE)[A-Z0-9_]*|API_ORIGIN|API_URL|PAIRING|BRIDGE', re.I)
+
           for source, text in texts:
               for url in url_re.findall(text):
                   clean = url.rstrip(';,]}')
-                  low = clean.lower()
-                  if any(k in low for k in keywords) and clean not in seen:
-                      seen.add(clean)
-                      interesting.append({'source': source, 'url': clean[:1000]})
-              for match in re.finditer(r'.{0,180}(?:EXPO_PUBLIC_[A-Z0-9_]*API[A-Z0-9_]*|API_ORIGIN|API_URL|PAIRING|BRIDGE).{0,320}', text, re.I | re.S):
-                  snippet = re.sub(r'\s+', ' ', match.group(0))[:700]
+                  if any(k in clean.lower() for k in endpoint_keywords):
+                      key = ('url', clean)
+                      if key not in seen:
+                          seen.add(key)
+                          findings.append({'source': source, 'url': clean[:1200]})
+              for match in snippet_keywords.finditer(text):
+                  start = max(0, match.start() - 220)
+                  end = min(len(text), match.end() + 420)
+                  snippet = re.sub(r'\s+', ' ', text[start:end])[:900]
                   key = ('snippet', snippet)
                   if key not in seen:
                       seen.add(key)
-                      interesting.append({'source': source, 'snippet': snippet})
-                      if len(interesting) >= 100:
-                          break
+                      findings.append({'source': source, 'snippet': snippet})
+                  if len(findings) >= 150:
+                      break
 
           receipt = {
-              'schema': 'piga.replit-expo-origin-discovery.v1',
+              'schema': 'piga.replit-expo-origin-discovery.v2',
               'authority': 'none',
-              'governance': 'A7SEM -> read-only public Expo fetch -> evidence -> A7SEM Reverse',
+              'governance': 'A7SEM -> read-only public Expo manifest/launch asset -> evidence -> A7SEM Reverse',
               'nonBudget': True,
               'manifestMeta': (root / 'manifest.meta').read_text(errors='replace') if (root / 'manifest.meta').exists() else None,
-              'bundleDevMeta': (root / 'bundle-dev.meta').read_text(errors='replace') if (root / 'bundle-dev.meta').exists() else None,
-              'bundleProdMeta': (root / 'bundle-prod.meta').read_text(errors='replace') if (root / 'bundle-prod.meta').exists() else None,
-              'findings': interesting[:100],
+              'launchUrl': (root / 'launch-url.txt').read_text(errors='replace').strip() if (root / 'launch-url.txt').exists() else None,
+              'launchAssetMeta': (root / 'launch-asset.meta').read_text(errors='replace') if (root / 'launch-asset.meta').exists() else None,
+              'findings': findings[:150],
           }
           (root / 'origin-discovery.json').write_text(json.dumps(receipt, indent=2) + '\n')
-          print(json.dumps(receipt, indent=2)[:30000])
+          print(json.dumps(receipt, indent=2)[:50000])
           PY
 
-      - name: Upload evidence
+      - name: Upload evidence receipt only
         if: always()
         uses: actions/upload-artifact@v4
         with:
