@@ -34,7 +34,7 @@ jobs:
           MANIFEST="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/control-plane.json"
           JSON="$(curl --fail --silent --show-error --location --max-time 15 "$MANIFEST")"
           ROOT="$(python -c 'import json,sys; print(json.load(sys.stdin)["controlPlaneUrl"].rstrip("/"))' <<<"$JSON")"
-          test "$ROOT" = "https://pigapocket.com"
+          test "$ROOT" = "https://app.pigapocket.com"
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
 
       - name: Probe admitted control-plane health
