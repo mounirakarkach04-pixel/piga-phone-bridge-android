@@ -1,0 +1,54 @@
+name: PIGA Pocket Shell Debug APK
+
+on:
+  push:
+    branches:
+      - feat/pocket-shell-tokenless-20260831
+    paths:
+      - 'pocket-shell/**'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - '.github/workflows/pocket-shell-debug-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-pocket-shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Build tokenless debug APK
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :pocket-shell:assembleDebug --no-daemon --stacktrace
+      - name: Verify package, deep link and hash
+        run: |
+          set -euo pipefail
+          APK=pocket-shell/build/outputs/apk/debug/pocket-shell-debug.apk
+          test -f "$APK"
+          grep -q 'applicationId = "com.pigapocket.enterprise"' pocket-shell/build.gradle.kts
+          grep -q 'android:scheme="pigapocket"' pocket-shell/src/main/AndroidManifest.xml
+          grep -q 'android:host="device-pairing"' pocket-shell/src/main/AndroidManifest.xml
+          grep -q 'https://app.pigapocket.com/' pocket-shell/src/main/java/com/pigapocket/enterprise/shell/MainActivity.kt
+          sha256sum "$APK" > "$APK.sha256"
+      - name: Upload APK evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-pocket-shell-debug-apk-${{ github.sha }}
+          path: |
+            pocket-shell/build/outputs/apk/debug/pocket-shell-debug.apk
+            pocket-shell/build/outputs/apk/debug/pocket-shell-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
