@@ -1,0 +1,98 @@
+name: PIGA Replit Expo Origin Discovery
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/replit-expo-origin-discovery.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch Expo manifest and Android bundle read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          base='https://piga-executor-client.replit.app'
+
+          curl --silent --show-error --location --max-redirs 3 --max-time 30 \
+            -H 'Accept: application/expo+json,application/json' \
+            -H 'Expo-Platform: android' \
+            -D evidence/manifest.headers \
+            -o evidence/manifest.body \
+            -w '%{http_code}\n%{url_effective}\n%{content_type}\n' \
+            "$base/" > evidence/manifest.meta || true
+
+          for path in \
+            '/index.bundle?platform=android&dev=true&hot=false&lazy=false&transform.engine=hermes' \
+            '/index.bundle?platform=android&dev=false&hot=false&lazy=false&transform.engine=hermes'; do
+            name=$(printf '%s' "$path" | grep -q 'dev=true' && echo bundle-dev || echo bundle-prod)
+            curl --silent --show-error --location --max-redirs 3 --max-time 60 \
+              -D "evidence/${name}.headers" \
+              -o "evidence/${name}.body" \
+              -w '%{http_code}\n%{url_effective}\n%{content_type}\n' \
+              "$base$path" > "evidence/${name}.meta" || true
+          done
+
+      - name: Extract bounded public endpoint evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+
+          root = Path('evidence')
+          texts = []
+          for name in ('manifest.body', 'bundle-dev.body', 'bundle-prod.body'):
+              p = root / name
+              if p.exists() and p.stat().st_size <= 50_000_000:
+                  texts.append((name, p.read_text(errors='replace')))
+
+          url_re = re.compile(r'https?://[^\s"\'<>\\)]+')
+          interesting = []
+          seen = set()
+          keywords = ('api', 'pair', 'bridge', 'piga', 'replit', 'vercel', 'health', 'origin')
+          for source, text in texts:
+              for url in url_re.findall(text):
+                  clean = url.rstrip(';,]}')
+                  low = clean.lower()
+                  if any(k in low for k in keywords) and clean not in seen:
+                      seen.add(clean)
+                      interesting.append({'source': source, 'url': clean[:1000]})
+              for match in re.finditer(r'.{0,180}(?:EXPO_PUBLIC_[A-Z0-9_]*API[A-Z0-9_]*|API_ORIGIN|API_URL|PAIRING|BRIDGE).{0,320}', text, re.I | re.S):
+                  snippet = re.sub(r'\s+', ' ', match.group(0))[:700]
+                  key = ('snippet', snippet)
+                  if key not in seen:
+                      seen.add(key)
+                      interesting.append({'source': source, 'snippet': snippet})
+                      if len(interesting) >= 100:
+                          break
+
+          receipt = {
+              'schema': 'piga.replit-expo-origin-discovery.v1',
+              'authority': 'none',
+              'governance': 'A7SEM -> read-only public Expo fetch -> evidence -> A7SEM Reverse',
+              'nonBudget': True,
+              'manifestMeta': (root / 'manifest.meta').read_text(errors='replace') if (root / 'manifest.meta').exists() else None,
+              'bundleDevMeta': (root / 'bundle-dev.meta').read_text(errors='replace') if (root / 'bundle-dev.meta').exists() else None,
+              'bundleProdMeta': (root / 'bundle-prod.meta').read_text(errors='replace') if (root / 'bundle-prod.meta').exists() else None,
+              'findings': interesting[:100],
+          }
+          (root / 'origin-discovery.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2)[:30000])
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-replit-expo-origin-discovery-${{ github.run_id }}
+          path: evidence/origin-discovery.json
+          retention-days: 7
