@@ -1,0 +1,193 @@
+name: PIGA Pocket App Domain Smoke Evidence
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/app-domain-smoke-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: piga-pocket-app-domain-smoke
+  cancel-in-progress: true
+
+jobs:
+  verify-app-domain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe app, control plane, showroom separation and APK manifest
+        id: probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+
+          probe_follow() {
+            local name="$1" url="$2"
+            curl --silent --show-error --location --max-redirs 5 --max-time 25 \
+              -D "evidence/${name}.headers" \
+              -o "evidence/${name}.body" \
+              -w '%{http_code}\n%{url_effective}\n' \
+              "$url" > "evidence/${name}.meta" || true
+          }
+
+          probe_code() {
+            local name="$1" url="$2"
+            curl --silent --show-error --max-redirs 0 --max-time 25 \
+              -D "evidence/${name}.headers" \
+              -o "evidence/${name}.body" \
+              -w '%{http_code}\n' \
+              "$url" > "evidence/${name}.meta" || true
+          }
+
+          probe_follow app-root https://app.pigapocket.com/
+          probe_follow showroom-root https://pigapocket.com/
+          probe_code app-health https://app.pigapocket.com/healthz
+          probe_code app-api-health https://app.pigapocket.com/api/health
+          probe_code android-latest https://app.pigapocket.com/__piga/android-latest.json
+
+      - name: Build A7SEM evidence receipt
+        id: assess
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          root = Path('evidence')
+
+          def text(name):
+              p = root / name
+              return p.read_text(errors='replace') if p.exists() else ''
+
+          def meta(name):
+              lines = [x.strip() for x in text(f'{name}.meta').splitlines() if x.strip()]
+              return {
+                  'http': int(lines[0]) if lines and lines[0].isdigit() else 0,
+                  'effectiveUrl': lines[1] if len(lines) > 1 else None,
+              }
+
+          def json_body(name):
+              try:
+                  return json.loads(text(f'{name}.body'))
+              except Exception:
+                  return None
+
+          app = meta('app-root')
+          showroom = meta('showroom-root')
+          app_health_meta = meta('app-health')
+          api_health_meta = meta('app-api-health')
+          android_meta = meta('android-latest')
+          edge = json_body('app-health')
+          api = json_body('app-api-health')
+          android = json_body('android-latest')
+
+          app_host = urlparse(app.get('effectiveUrl') or '').hostname
+          showroom_host = urlparse(showroom.get('effectiveUrl') or '').hostname
+          app_body = (root / 'app-root.body').read_bytes() if (root / 'app-root.body').exists() else b''
+          showroom_body = (root / 'showroom-root.body').read_bytes() if (root / 'showroom-root.body').exists() else b''
+
+          route_ok = app['http'] == 200 and app_host == 'app.pigapocket.com'
+          showroom_ok = showroom['http'] == 200 and showroom_host == 'pigapocket.com'
+          edge_ok = app_health_meta['http'] == 200 and isinstance(edge, dict) and edge.get('status') == 'ok'
+          api_ok = (
+              api_health_meta['http'] == 200
+              and isinstance(api, dict)
+              and api.get('schema') == 'piga.control-plane-health.v1'
+              and api.get('status') in {'ALLOW', 'IDLE', 'HEARTBEAT'}
+              and api.get('authority') == 'none'
+              and api.get('engineCount') == 5
+              and api.get('additionalEngineCreated') is False
+              and api.get('a7semReverseIsEngine') is False
+          )
+          android_ready = (
+              android_meta['http'] == 200
+              and isinstance(android, dict)
+              and android.get('status') == 'READY'
+              and android.get('androidPackage') == 'com.pigapocket.enterprise'
+              and isinstance(android.get('buildUrl'), str)
+              and android.get('buildUrl', '').startswith('https://')
+          )
+
+          blockers = []
+          if not route_ok:
+              blockers.append('APP_DOMAIN_ROUTE_NOT_ADMITTED')
+          if not showroom_ok:
+              blockers.append('SHOWROOM_ROUTE_NOT_STABLE')
+          if not edge_ok:
+              blockers.append('APP_EDGE_HEALTH_NOT_ADMITTED')
+          if not api_ok:
+              blockers.append('APP_CONTROL_PLANE_NOT_ADMITTED')
+          if not android_ready:
+              blockers.append('ANDROID_APK_NOT_READY')
+
+          receipt = {
+              'schema': 'piga.pocket-app-domain-smoke.v1',
+              'verifiedAt': datetime.now(timezone.utc).isoformat(),
+              'governance': 'A7SEM -> read-only production probes -> evidence -> A7SEM Reverse -> conclusion',
+              'authority': 'none',
+              'nonBudget': True,
+              'result': 'PASS' if not blockers else 'DELAY',
+              'app': {
+                  **app,
+                  'effectiveHost': app_host,
+                  'routeOk': route_ok,
+                  'sha256': hashlib.sha256(app_body).hexdigest() if app_body else None,
+              },
+              'showroom': {
+                  **showroom,
+                  'effectiveHost': showroom_host,
+                  'routeOk': showroom_ok,
+                  'sha256': hashlib.sha256(showroom_body).hexdigest() if showroom_body else None,
+              },
+              'edgeHealth': {'http': app_health_meta['http'], 'body': edge},
+              'controlPlaneHealth': {'http': api_health_meta['http'], 'body': api},
+              'androidArtifact': {
+                  'http': android_meta['http'],
+                  'status': android.get('status') if isinstance(android, dict) else None,
+                  'reason': android.get('reason') if isinstance(android, dict) else None,
+                  'appVersion': android.get('appVersion') if isinstance(android, dict) else None,
+                  'buildId': android.get('buildId') if isinstance(android, dict) else None,
+                  'buildUrl': android.get('buildUrl') if isinstance(android, dict) else None,
+                  'androidPackage': android.get('androidPackage') if isinstance(android, dict) else None,
+                  'ready': android_ready,
+              },
+              'blockers': blockers,
+          }
+          (root / 'app-domain-smoke-receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(receipt, indent=2, sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+              fh.write(f"result={receipt['result']}\n")
+              fh.write(f"blockers={','.join(blockers)}\n")
+          PY
+
+      - name: Publish concise evidence summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### PIGA Pocket App Domain Smoke'
+            echo '- Governance: A7SEM -> read-only probes -> evidence -> A7SEM Reverse'
+            echo '- Authority: none'
+            echo '- Budget: no new paid service'
+            echo "- Result: ${{ steps.assess.outputs.result || 'UNKNOWN' }}"
+            echo "- Blockers: ${{ steps.assess.outputs.blockers || 'receipt unavailable' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-pocket-app-domain-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 30
