@@ -8,22 +8,23 @@ class ControlPlaneResolverTest {
     @Test
     fun acceptsOnlyCanonicalOrigin() {
         assertEquals(
-            "https://pigapocket.com",
-            ControlPlaneResolver.validateEndpoint("https://pigapocket.com/"),
+            "https://app.pigapocket.com",
+            ControlPlaneResolver.validateEndpoint("https://app.pigapocket.com/"),
         )
     }
 
     @Test
     fun rejectsUntrustedHostsAndUrlComponents() {
         listOf(
-            "http://pigapocket.com",
+            "http://app.pigapocket.com",
+            "https://pigapocket.com",
             "https://www.pigapocket.com",
             "https://api.pigapocket.com",
-            "https://pigapocket.com:8443",
-            "https://user:pass@pigapocket.com",
-            "https://pigapocket.com/api",
-            "https://pigapocket.com?x=1",
-            "https://pigapocket.com#fragment",
+            "https://app.pigapocket.com:8443",
+            "https://user:pass@app.pigapocket.com",
+            "https://app.pigapocket.com/api",
+            "https://app.pigapocket.com?x=1",
+            "https://app.pigapocket.com#fragment",
         ).forEach { candidate ->
             assertThrows(IllegalArgumentException::class.java) {
                 ControlPlaneResolver.validateEndpoint(candidate)
