@@ -114,7 +114,7 @@ jobs:
 
       - name: Upload evidence receipt only
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: piga-replit-expo-origin-discovery-${{ github.run_id }}
           path: evidence/origin-discovery.json
