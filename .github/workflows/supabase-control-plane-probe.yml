@@ -1,0 +1,46 @@
+name: PIGA Supabase Control Plane Probe
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/supabase-control-plane-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe Supabase control plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-control-plane'
+          mkdir -p evidence
+
+          curl -sS -D evidence/health.headers -o evidence/health.json -w '%{http_code}' "$BASE/api/health" > evidence/health.status
+          cat evidence/health.json
+          test "$(cat evidence/health.status)" = '200'
+          jq -e '.schema=="piga.control-plane-health.v1" and (.status=="HEARTBEAT" or .status=="ALLOW" or .status=="IDLE") and .authority=="none" and .engineCount==5 and .additionalEngineCreated==false and .a7semReverseIsEngine==false and .heartbeatFresh==true and .heartbeatTtlMs==60000' evidence/health.json
+
+          curl -sS -D evidence/first-owner.headers -o evidence/first-owner.json -w '%{http_code}' "$BASE/api/governance/first-owner/bootstrap" > evidence/first-owner.status
+          cat evidence/first-owner.json
+          test "$(cat evidence/first-owner.status)" = '401'
+          jq -e '.error=="Authentication required."' evidence/first-owner.json
+
+          curl -sS -X POST -H 'content-type: application/json' -d '{}' -D evidence/challenge.headers -o evidence/challenge.json -w '%{http_code}' "$BASE/api/bridge/pairing/challenge" > evidence/challenge.status
+          cat evidence/challenge.json
+          test "$(cat evidence/challenge.status)" = '400'
+          jq -e '.error=="A valid EC-P256 device identity is required."' evidence/challenge.json
+
+          printf '%s\n' '{"sequence":"A7SEM -> external probe -> evidence -> A7SEM Reverse","result":"PASS","reason":"SUPABASE_CONTROL_PLANE_EXTERNALLY_PROVEN","authority":"none"}' > evidence/a7sem-receipt.json
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-supabase-control-plane-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
