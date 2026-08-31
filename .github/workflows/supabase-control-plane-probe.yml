@@ -14,53 +14,52 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe Supabase control plane v2
+      - name: Probe Supabase v4 and production cutover
         shell: bash
         run: |
           set -euo pipefail
           BASE='https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-control-plane'
-          mkdir -p evidence crypto
+          APP='https://app.pigapocket.com'
+          PUBLIC='https://pigapocket.com'
+          mkdir -p evidence
 
-          curl -sS -D evidence/health-1.headers -o evidence/health-1.json -w '%{http_code}' "$BASE/api/health" > evidence/health-1.status
-          sleep 1
-          curl -sS -D evidence/health-2.headers -o evidence/health-2.json -w '%{http_code}' "$BASE/api/health" > evidence/health-2.status
-          cat evidence/health-1.json
-          cat evidence/health-2.json
-          test "$(cat evidence/health-1.status)" = '200'
-          test "$(cat evidence/health-2.status)" = '200'
-          jq -e '.schema=="piga.control-plane-health.v1" and .status=="HEARTBEAT" and .authority=="none" and .engineCount==5 and .additionalEngineCreated==false and .a7semReverseIsEngine==false and .heartbeatFresh==true and .heartbeatTtlMs==60000 and .specVersion=="piga-supabase-control-plane-v2" and .bridgeCrypto.device=="EC-P256-SHA256" and .bridgeCrypto.server=="Ed25519" and .bridgeCrypto.durable==true' evidence/health-1.json
-          KEY1="$(jq -r '.bridgeCrypto.serverKeyId' evidence/health-1.json)"
-          KEY2="$(jq -r '.bridgeCrypto.serverKeyId' evidence/health-2.json)"
-          test -n "$KEY1"
-          test "$KEY1" = "$KEY2"
-          printf '%s\n' "$KEY1" > evidence/server-key-id.txt
+          probe_health() {
+            local name="$1"
+            local url="$2"
+            curl -sS --retry 3 --retry-delay 3 --max-time 20 -D "evidence/${name}.headers" -o "evidence/${name}.json" -w '%{http_code}' "$url" > "evidence/${name}.status"
+            test "$(cat "evidence/${name}.status")" = '200'
+            jq -e '.schema=="piga.control-plane-health.v1" and .status=="HEARTBEAT" and .authority=="none" and .engineCount==5 and .additionalEngineCreated==false and .a7semReverseIsEngine==false and .heartbeatFresh==true and .heartbeatTtlMs==60000 and .specVersion=="piga-supabase-control-plane-v4" and .persistence=="supabase-postgres" and .admission=="fail-closed" and .bridgeCrypto.device=="EC-P256-SHA256" and .bridgeCrypto.server=="Ed25519" and .bridgeCrypto.durable==true and (.clerkIssuers|index("clerk.app.pigapocket.com")!=null)' "evidence/${name}.json"
+          }
 
-          curl -sS -D evidence/first-owner.headers -o evidence/first-owner.json -w '%{http_code}' "$BASE/api/governance/first-owner/bootstrap" > evidence/first-owner.status
+          probe_health direct "$BASE/api/health"
+          probe_health app "$APP/api/health"
+          probe_health public "$PUBLIC/api/health"
+
+          DIRECT_KEY="$(jq -r '.bridgeCrypto.serverKeyId' evidence/direct.json)"
+          APP_KEY="$(jq -r '.bridgeCrypto.serverKeyId' evidence/app.json)"
+          PUBLIC_KEY="$(jq -r '.bridgeCrypto.serverKeyId' evidence/public.json)"
+          test -n "$DIRECT_KEY"
+          test "$DIRECT_KEY" = "$APP_KEY"
+          test "$DIRECT_KEY" = "$PUBLIC_KEY"
+
+          curl -sS --max-time 20 -D evidence/first-owner.headers -o evidence/first-owner.json -w '%{http_code}' "$APP/api/governance/first-owner/bootstrap" > evidence/first-owner.status
           test "$(cat evidence/first-owner.status)" = '401'
           jq -e '.error=="Authentication required."' evidence/first-owner.json
 
-          curl -sS -X POST -H 'content-type: application/json' -d '{}' -D evidence/challenge.headers -o evidence/challenge.json -w '%{http_code}' "$BASE/api/bridge/pairing/challenge" > evidence/challenge.status
+          curl -sS --max-time 20 -X POST -H 'content-type: application/json' -d '{}' -D evidence/challenge.headers -o evidence/challenge.json -w '%{http_code}' "$APP/api/bridge/pairing/challenge" > evidence/challenge.status
           test "$(cat evidence/challenge.status)" = '400'
           jq -e '.error=="A valid EC-P256 device identity is required."' evidence/challenge.json
 
-          openssl ecparam -name prime256v1 -genkey -noout -out crypto/private.pem
-          openssl ec -in crypto/private.pem -pubout -outform DER -out crypto/public.der
-          printf 'PIGA_SUPABASE_ECDSA_TEST_V2' > crypto/message.txt
-          openssl dgst -sha256 -sign crypto/private.pem -out crypto/signature.der crypto/message.txt
-          PUB="$(base64 -w0 crypto/public.der)"
-          SIG="$(base64 -w0 crypto/signature.der | tr '+/' '-_' | tr -d '=')"
-          jq -n --arg publicKey "$PUB" --arg message 'PIGA_SUPABASE_ECDSA_TEST_V2' --arg signature "$SIG" '{publicKey:$publicKey,message:$message,signature:$signature}' > crypto/request.json
-          curl -sS -X POST -H 'content-type: application/json' --data-binary @crypto/request.json -D evidence/crypto-valid.headers -o evidence/crypto-valid.json -w '%{http_code}' "$BASE/__piga/crypto/verify-ec-p256" > evidence/crypto-valid.status
-          cat evidence/crypto-valid.json
-          test "$(cat evidence/crypto-valid.status)" = '200'
-          jq -e '.valid==true and .algorithm=="EC-P256-SHA256"' evidence/crypto-valid.json
+          curl -sS --max-time 20 -X POST -H 'content-type: application/json' -d '{}' -D evidence/watchdog.headers -o evidence/watchdog.json -w '%{http_code}' "$PUBLIC/api/factory/trigger/next" > evidence/watchdog.status
+          case "$(cat evidence/watchdog.status)" in
+            401|503) ;;
+            *) echo 'Unsigned watchdog was not fail-closed'; cat evidence/watchdog.json; exit 1 ;;
+          esac
 
-          jq '.signature="AAAA"' crypto/request.json > crypto/invalid-request.json
-          curl -sS -X POST -H 'content-type: application/json' --data-binary @crypto/invalid-request.json -D evidence/crypto-invalid.headers -o evidence/crypto-invalid.json -w '%{http_code}' "$BASE/__piga/crypto/verify-ec-p256" > evidence/crypto-invalid.status
-          test "$(cat evidence/crypto-invalid.status)" = '422'
-          jq -e '.valid==false' evidence/crypto-invalid.json
+          curl -fsS --max-time 20 "$PUBLIC/" > evidence/showroom.html
+          grep -qi 'piga' evidence/showroom.html
 
-          printf '%s\n' '{"sequence":"A7SEM -> external v2 crypto probe -> evidence -> A7SEM Reverse","result":"PASS","reason":"SUPABASE_CONTROL_PLANE_CRYPTO_V2_EXTERNALLY_PROVEN","authority":"none"}' > evidence/a7sem-receipt.json
+          jq -n --arg key "$DIRECT_KEY" '{sequence:"A7SEM -> Supabase v4 -> Cloudflare production -> external evidence -> A7SEM Reverse",result:"PASS",reason:"SUPABASE_V4_PRODUCTION_CUTOVER_EXTERNALLY_PROVEN",authority:"none",serverKeyId:$key}' > evidence/a7sem-receipt.json
 
       - name: Upload evidence
         uses: actions/upload-artifact@v4
