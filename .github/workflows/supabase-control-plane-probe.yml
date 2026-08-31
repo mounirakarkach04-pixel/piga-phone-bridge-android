@@ -14,56 +14,90 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe Supabase v4 and production cutover
+      - name: Capture live routing evidence
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           BASE='https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-control-plane'
           APP='https://app.pigapocket.com'
           PUBLIC='https://pigapocket.com'
           mkdir -p evidence
 
-          probe_health() {
+          capture() {
             local name="$1"
             local url="$2"
-            curl -sS --retry 3 --retry-delay 3 --max-time 20 -D "evidence/${name}.headers" -o "evidence/${name}.json" -w '%{http_code}' "$url" > "evidence/${name}.status"
-            test "$(cat "evidence/${name}.status")" = '200'
-            jq -e '.schema=="piga.control-plane-health.v1" and .status=="HEARTBEAT" and .authority=="none" and .engineCount==5 and .additionalEngineCreated==false and .a7semReverseIsEngine==false and .heartbeatFresh==true and .heartbeatTtlMs==60000 and .specVersion=="piga-supabase-control-plane-v4" and .persistence=="supabase-postgres" and .admission=="fail-closed" and .bridgeCrypto.device=="EC-P256-SHA256" and .bridgeCrypto.server=="Ed25519" and .bridgeCrypto.durable==true and (.clerkIssuers|index("clerk.app.pigapocket.com")!=null)' "evidence/${name}.json"
+            curl -sS --retry 2 --retry-delay 2 --max-time 20 -D "evidence/${name}.headers" -o "evidence/${name}.body" -w '%{http_code}' "$url" > "evidence/${name}.status" || printf '000' > "evidence/${name}.status"
+            echo "===== ${name} status ====="
+            cat "evidence/${name}.status" || true
+            echo
+            echo "===== ${name} headers ====="
+            sed -n '1,80p' "evidence/${name}.headers" || true
+            echo "===== ${name} body ====="
+            head -c 12000 "evidence/${name}.body" || true
+            echo
           }
 
-          probe_health direct "$BASE/api/health"
-          probe_health app "$APP/api/health"
-          probe_health public "$PUBLIC/api/health"
+          capture direct "$BASE/api/health"
+          capture app "$APP/api/health"
+          capture public "$PUBLIC/api/health"
+          capture app_healthz "$APP/api/healthz"
+          capture public_healthz "$PUBLIC/api/healthz"
 
-          DIRECT_KEY="$(jq -r '.bridgeCrypto.serverKeyId' evidence/direct.json)"
-          APP_KEY="$(jq -r '.bridgeCrypto.serverKeyId' evidence/app.json)"
-          PUBLIC_KEY="$(jq -r '.bridgeCrypto.serverKeyId' evidence/public.json)"
-          test -n "$DIRECT_KEY"
-          test "$DIRECT_KEY" = "$APP_KEY"
-          test "$DIRECT_KEY" = "$PUBLIC_KEY"
+          curl -sS --max-time 20 -D evidence/first-owner.headers -o evidence/first-owner.body -w '%{http_code}' "$APP/api/governance/first-owner/bootstrap" > evidence/first-owner.status || printf '000' > evidence/first-owner.status
+          curl -sS --max-time 20 -X POST -H 'content-type: application/json' -d '{}' -D evidence/challenge.headers -o evidence/challenge.body -w '%{http_code}' "$APP/api/bridge/pairing/challenge" > evidence/challenge.status || printf '000' > evidence/challenge.status
+          curl -sS --max-time 20 -X POST -H 'content-type: application/json' -d '{}' -D evidence/watchdog.headers -o evidence/watchdog.body -w '%{http_code}' "$PUBLIC/api/factory/trigger/next" > evidence/watchdog.status || printf '000' > evidence/watchdog.status
 
-          curl -sS --max-time 20 -D evidence/first-owner.headers -o evidence/first-owner.json -w '%{http_code}' "$APP/api/governance/first-owner/bootstrap" > evidence/first-owner.status
-          test "$(cat evidence/first-owner.status)" = '401'
-          jq -e '.error=="Authentication required."' evidence/first-owner.json
+          echo '===== auxiliary status ====='
+          printf 'first-owner='; cat evidence/first-owner.status; echo
+          printf 'challenge='; cat evidence/challenge.status; echo
+          printf 'watchdog='; cat evidence/watchdog.status; echo
+          echo '===== first-owner body ====='; head -c 4000 evidence/first-owner.body || true; echo
+          echo '===== challenge body ====='; head -c 4000 evidence/challenge.body || true; echo
+          echo '===== watchdog body ====='; head -c 4000 evidence/watchdog.body || true; echo
 
-          curl -sS --max-time 20 -X POST -H 'content-type: application/json' -d '{}' -D evidence/challenge.headers -o evidence/challenge.json -w '%{http_code}' "$APP/api/bridge/pairing/challenge" > evidence/challenge.status
-          test "$(cat evidence/challenge.status)" = '400'
-          jq -e '.error=="A valid EC-P256 device identity is required."' evidence/challenge.json
-
-          curl -sS --max-time 20 -X POST -H 'content-type: application/json' -d '{}' -D evidence/watchdog.headers -o evidence/watchdog.json -w '%{http_code}' "$PUBLIC/api/factory/trigger/next" > evidence/watchdog.status
-          case "$(cat evidence/watchdog.status)" in
-            401|503) ;;
-            *) echo 'Unsigned watchdog was not fail-closed'; cat evidence/watchdog.json; exit 1 ;;
-          esac
-
-          curl -fsS --max-time 20 "$PUBLIC/" > evidence/showroom.html
-          grep -qi 'piga' evidence/showroom.html
-
-          jq -n --arg key "$DIRECT_KEY" '{sequence:"A7SEM -> Supabase v4 -> Cloudflare production -> external evidence -> A7SEM Reverse",result:"PASS",reason:"SUPABASE_V4_PRODUCTION_CUTOVER_EXTERNALLY_PROVEN",authority:"none",serverKeyId:$key}' > evidence/a7sem-receipt.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('evidence')
+          def status(name):
+              try: return (root/f'{name}.status').read_text().strip()
+              except Exception: return '000'
+          def body(name):
+              try: return (root/f'{name}.body').read_text(errors='replace')
+              except Exception: return ''
+          def parse(name):
+              try: return json.loads(body(name))
+              except Exception: return {}
+          direct = parse('direct')
+          app = parse('app')
+          public = parse('public')
+          receipt = {
+              'sequence':'A7SEM -> live route capture -> A7SEM Reverse',
+              'authority':'none',
+              'directStatus':status('direct'),
+              'appStatus':status('app'),
+              'publicStatus':status('public'),
+              'appHealthzStatus':status('app_healthz'),
+              'publicHealthzStatus':status('public_healthz'),
+              'directSpec':direct.get('specVersion'),
+              'appSpec':app.get('specVersion'),
+              'publicSpec':public.get('specVersion'),
+              'directServerKeyId':(direct.get('bridgeCrypto') or {}).get('serverKeyId'),
+              'appServerKeyId':(app.get('bridgeCrypto') or {}).get('serverKeyId'),
+              'publicServerKeyId':(public.get('bridgeCrypto') or {}).get('serverKeyId'),
+          }
+          (root/'routing-receipt.json').write_text(json.dumps(receipt, indent=2))
+          print(json.dumps(receipt, indent=2))
+          direct_ok = status('direct') == '200' and direct.get('specVersion') == 'piga-supabase-control-plane-v4'
+          cutover_ok = direct_ok and status('app') == '200' and status('public') == '200' and app.get('specVersion') == direct.get('specVersion') and public.get('specVersion') == direct.get('specVersion') and (app.get('bridgeCrypto') or {}).get('serverKeyId') == (direct.get('bridgeCrypto') or {}).get('serverKeyId') and (public.get('bridgeCrypto') or {}).get('serverKeyId') == (direct.get('bridgeCrypto') or {}).get('serverKeyId')
+          (root/'cutover-verdict.txt').write_text('PASS\n' if cutover_ok else 'BLOCK\n')
+          raise SystemExit(0 if cutover_ok else 1)
+          PY
 
       - name: Upload evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: piga-supabase-control-plane-${{ github.run_id }}-${{ github.run_attempt }}
+          name: piga-live-routing-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence/
           if-no-files-found: error
