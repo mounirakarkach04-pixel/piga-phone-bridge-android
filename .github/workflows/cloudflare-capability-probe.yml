@@ -1,0 +1,37 @@
+name: PIGA Cloudflare Capability Probe
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/cloudflare-capability-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Check bounded deployment capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          token=false
+          account=false
+          if [ -n "${CF_TOKEN:-}" ]; then token=true; fi
+          if [ -n "${CF_ACCOUNT:-}" ]; then account=true; fi
+          printf '{"cloudflareApiTokenAvailable":%s,"cloudflareAccountIdAvailable":%s,"secretValuesExposed":false}\n' "$token" "$account" | tee capability.json
+          test "$token" = true
+          test "$account" = true
+      - name: Upload non-secret capability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-cloudflare-capability-${{ github.run_id }}
+          path: capability.json
+          if-no-files-found: warn
