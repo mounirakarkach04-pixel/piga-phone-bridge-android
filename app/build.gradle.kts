@@ -8,11 +8,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.pigapocket.enterprise"
+        applicationId = "com.pigapocket.bridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.0.3"
+        versionCode = 21
+        versionName = "1.0.4"
 
         vectorDrawables {
             useSupportLibrary = false
@@ -25,9 +25,10 @@ android {
 
     buildTypes {
         getByName("debug") {
-            // Deliberately keep the canonical Pocket package ID for direct
-            // device installation. The debug keystore provides installable
-            // signing without creating any publication authority.
+            // The bridge is a companion runtime and must never replace the
+            // canonical PIGA Pocket application (com.pigapocket.enterprise).
+            // The debug keystore keeps direct device testing installable
+            // without granting any publication authority.
         }
         getByName("release") {
             isDebuggable = false
