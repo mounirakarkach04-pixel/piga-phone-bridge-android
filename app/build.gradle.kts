@@ -8,11 +8,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "io.piga.phonebridge.mobile"
+        applicationId = "com.pigapocket.enterprise"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.2.0"
+        versionCode = 20
+        versionName = "1.0.3"
 
         vectorDrawables {
             useSupportLibrary = false
@@ -25,8 +25,9 @@ android {
 
     buildTypes {
         getByName("debug") {
-            applicationIdSuffix = ".debug"
-            versionNameSuffix = "-debug"
+            // Deliberately keep the canonical Pocket package ID for direct
+            // device installation. The debug keystore provides installable
+            // signing without creating any publication authority.
         }
         getByName("release") {
             isDebuggable = false
