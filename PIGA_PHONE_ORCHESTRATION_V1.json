@@ -12,7 +12,7 @@
   },
   "phoneNode": {
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
-    "applicationId": "com.pigapocket.enterprise",
+    "applicationId": "com.pigapocket.bridge",
     "minimumCompatibleVersionCode": 20,
     "minimumCompatibleVersionName": "1.0.3",
     "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier",
