@@ -1,0 +1,50 @@
+name: Pairing Web Surface Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/pairing-web-surface-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify deployed pairing bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re, urllib.request, urllib.parse
+          root = 'https://app.pigapocket.com/device-pairing'
+          req = urllib.request.Request(root, headers={'User-Agent':'PIGA-Pairing-Probe/1.0'})
+          html = urllib.request.urlopen(req, timeout=20).read().decode('utf-8','replace')
+          base = 'https://app.pigapocket.com/'
+          assets = re.findall(r'(?:src|href)=["\']([^"\']+\.js(?:\?[^"\']*)?)["\']', html)
+          texts = [html]
+          for asset in assets[:40]:
+              url = urllib.parse.urljoin(base, asset)
+              try:
+                  texts.append(urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent':'PIGA-Pairing-Probe/1.0'}), timeout=20).read().decode('utf-8','replace'))
+              except Exception:
+                  pass
+          joined = '\n'.join(texts)
+          markers = [
+              'PIGA Pocket Bridge',
+              'Dieses Handy als ersten Besitzer bestätigen',
+              'pigapocketbridge',
+          ]
+          print('HTTP surface bytes:', len(html))
+          print('JS assets inspected:', len(texts)-1)
+          for marker in markers:
+              present = marker in joined
+              print(f'{marker}: {"PASS" if present else "MISSING"}')
+          if not all(marker in joined for marker in markers):
+              raise SystemExit('PAIRING_WEB_SURFACE_NOT_UPDATED')
+          print('PAIRING_WEB_SURFACE=UPDATED')
+          PY
