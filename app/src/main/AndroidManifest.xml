@@ -31,12 +31,15 @@
         <activity
             android:name=".PairingActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:label="@string/pairing_title">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="pigapocket" android:host="device-pairing" />
+                <data android:scheme="pigapocketbridge" android:host="device-pairing" />
+                <data android:scheme="pigapocketbridge" android:host="owner-claim" />
+                <data android:scheme="pigapocketbridge" android:host="pair-confirm" />
             </intent-filter>
         </activity>
 
