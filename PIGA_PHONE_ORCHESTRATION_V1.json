@@ -12,9 +12,9 @@
   },
   "phoneNode": {
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
-    "applicationId": "io.piga.phonebridge.mobile",
-    "minimumCompatibleVersionCode": 19,
-    "minimumCompatibleVersionName": "0.2.0",
+    "applicationId": "com.pigapocket.enterprise",
+    "minimumCompatibleVersionCode": 20,
+    "minimumCompatibleVersionName": "1.0.3",
     "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier",
     "receiptContract": "io.piga.phonebridge.CommandReceiptContract"
   },
@@ -23,28 +23,12 @@
     "capabilityScope": "pocket.orchestration.verify",
     "payloadRequired": ["plan", "planSha256"],
     "factoryContextOptionalForLegacy": true,
-    "factoryContextWhenPresentRequired": [
-      "jobId",
-      "subjobId",
-      "verifiedPlanHash",
-      "actionSpecHash",
-      "expectedCommandId"
-    ],
+    "factoryContextWhenPresentRequired": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "expectedCommandId"],
     "nonceRequired": true,
     "expiresAtRequired": true,
     "leaseUntilRequired": true
   },
-  "receiptRequired": [
-    "admitted",
-    "reason",
-    "planSha256",
-    "gate2AfterFrontier",
-    "gate2AfterRuntime",
-    "actionAfterGate2",
-    "productionAuthorized",
-    "externalActionExecuted",
-    "source"
-  ],
+  "receiptRequired": ["admitted", "reason", "planSha256", "gate2AfterFrontier", "gate2AfterRuntime", "actionAfterGate2", "productionAuthorized", "externalActionExecuted", "source"],
   "factoryReceiptCorrelation": {
     "fields": ["jobId", "subjobId", "verifiedPlanHash", "actionSpecHash", "commandId"],
     "commandIdMustEqualExpectedCommandId": true,
