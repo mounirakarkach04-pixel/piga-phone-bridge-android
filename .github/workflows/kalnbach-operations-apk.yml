@@ -55,7 +55,7 @@ jobs:
         run: |
           gh release delete kalnbach-operations-fieldtest --cleanup-tag -y || true
           gh release create kalnbach-operations-fieldtest Kalnbach-Operations.apk Kalnbach-Operations.apk.sha256 \
-            --title 'Kalnbach Operations – Android Feldtest' \
-            --notes 'Standalone Android Feldtest. Oeffnet ausschliesslich die Kalnbach Operations HTTPS-App. Kein Clerk, kein PIGA Showroom, keine PIGA Enterprise App.' \
+            --title 'Kalnbach Operations 2.1 – Android Feldtest' \
+            --notes 'Kalnbach Operations 2.1 FIELDTEST: responsive mobile UI, normaler E-Mail/Passwort-Login, rollenbasierte Freigaben, Geschäftsführungs-Editoren mit Audit, Zeitexport, Krankmeldung/eAU-Workflow, Arbeitsscheine, Aufgaben, Rechnungs-/Compliance-Gates, Integrationsverwaltung und eingebettete Offline-Shell. Kein Clerk, kein PIGA Showroom, keine Produktionsfreigabe.' \
             --prerelease \
             --target '${{ github.sha }}'
