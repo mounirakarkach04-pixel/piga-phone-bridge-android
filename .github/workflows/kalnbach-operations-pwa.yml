@@ -1,0 +1,65 @@
+name: Kalnbach Operations PWA
+
+on:
+  push:
+    branches:
+      - build/kalnbach-operations-apk-20260902
+    paths:
+      - 'kalnbach-app/src/main/assets/**'
+      - '.github/workflows/kalnbach-operations-pwa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: kalnbach-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare PWA site
+        run: |
+          mkdir -p site
+          cp kalnbach-app/src/main/assets/index.html site/
+          cp kalnbach-app/src/main/assets/app.css site/
+          cp kalnbach-app/src/main/assets/app.js site/
+          cp kalnbach-app/src/main/assets/manifest.webmanifest site/
+          cp kalnbach-app/src/main/assets/sw.js site/
+          cp kalnbach-app/src/main/assets/kalnbach-logo.svg site/
+          python3 - <<'PY'
+          from pathlib import Path
+          try:
+              from PIL import Image, ImageDraw
+          except Exception:
+              raise SystemExit('Pillow missing')
+          for size,name in [(180,'icon-180.png'),(192,'icon-192.png'),(512,'icon-512.png')]:
+              im=Image.new('RGB',(size,size),'#08243a')
+              d=ImageDraw.Draw(im)
+              # stylized white K
+              s=size
+              d.polygon([(0.23*s,0.18*s),(0.37*s,0.18*s),(0.37*s,0.44*s),(0.59*s,0.18*s),(0.77*s,0.18*s),(0.52*s,0.48*s),(0.79*s,0.82*s),(0.61*s,0.82*s),(0.42*s,0.57*s),(0.37*s,0.63*s),(0.37*s,0.82*s),(0.23*s,0.82*s)], fill='white')
+              d.pieslice((0.12*s,0.53*s,0.92*s,0.98*s), start=12, end=168, fill='#57b957')
+              d.polygon([(0.75*s,0.22*s),(0.78*s,0.30*s),(0.86*s,0.33*s),(0.78*s,0.36*s),(0.75*s,0.44*s),(0.72*s,0.36*s),(0.64*s,0.33*s),(0.72*s,0.30*s)], fill='#80d76b')
+              im.save('site/'+name, optimize=True)
+          PY
+          touch site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
