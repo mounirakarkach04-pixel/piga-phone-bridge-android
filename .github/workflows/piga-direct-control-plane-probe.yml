@@ -1,0 +1,50 @@
+name: PIGA Direct Control Plane Probe
+
+on:
+  push:
+    paths:
+      - .github/workflows/piga-direct-control-plane-probe.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Obtain GitHub OIDC token
+        id: oidc
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=piga-pocket-enterprise")"
+          token="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Probe direct Supabase control plane
+        shell: bash
+        env:
+          TOKEN: ${{ steps.oidc.outputs.token }}
+          ROOT: https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-control-plane
+        run: |
+          set -euo pipefail
+          auth=(-H "Authorization: Bearer $TOKEN" -H 'Accept: application/json')
+
+          code="$(curl -sS -o /tmp/health.json -w '%{http_code}' "${auth[@]}" "$ROOT/api/health")"
+          echo "health_http=$code"
+          cat /tmp/health.json
+          test "$code" = "200"
+
+          found=0
+          for endpoint in /api/devices /api/device-control/devices /api/bridge/devices /api/phone/devices; do
+            code="$(curl -sS -o /tmp/devices.json -w '%{http_code}' "${auth[@]}" "$ROOT$endpoint")"
+            echo "device_endpoint=$endpoint http=$code"
+            if [ "$code" = "200" ]; then
+              cat /tmp/devices.json
+              found=1
+              break
+            fi
+          done
+          test "$found" = "1"
