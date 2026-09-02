@@ -1,15 +1,15 @@
-name: PIGA Pocket Bootstrap APK
+name: PIGA Pocket Enterprise Web Shell APK
 
 on:
   push:
-    branches: ["factory/pocket-bootstrap-public-runner-20260902"]
+    branches: ["factory/pocket-enterprise-webshell-20260903"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-bootstrap:
+  build-enterprise-shell:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -22,9 +22,9 @@ jobs:
         with:
           gradle-version: '8.9'
           cache-read-only: false
-      - name: Build bootstrap APK
+      - name: Build PIGA Pocket Enterprise Web Shell APK
         run: gradle :pocket-bootstrap:assembleDebug --build-cache --stacktrace
-      - name: Record evidence
+      - name: Record governed evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -32,10 +32,10 @@ jobs:
           test -s "$APK"
           sha256sum "$APK" > "$APK.sha256"
           mkdir -p pocket-bootstrap-evidence
-          printf '{"schema":"piga.pocket-bootstrap.v1","commit":"%s","package":"com.pigapocket.bootstrap","targetOrigin":"https://app.pigapocket.com","privateEnterpriseSourceIncluded":false,"publicationAuthorized":false,"completionClaim":"BOOTSTRAP_APK_BUILD_ONLY"}\n' "$GITHUB_SHA" > pocket-bootstrap-evidence/bootstrap.json
+          printf '{"schema":"piga.pocket-enterprise-webshell.v1","commit":"%s","package":"com.pigapocket.enterprise","targetOrigin":"https://app.pigapocket.com","privateEnterpriseSourceIncluded":false,"artifactClass":"ANDROID_WEB_SHELL_INTERNAL_PREVIEW","publicationAuthorized":false,"physicalE2EPassed":false,"finalReleaseControl":"BLOCKED_PENDING_PHYSICAL_E2E"}\n' "$GITHUB_SHA" > pocket-bootstrap-evidence/bootstrap.json
       - uses: actions/upload-artifact@v4
         with:
-          name: piga-pocket-bootstrap-${{ github.sha }}
+          name: piga-pocket-enterprise-webshell-${{ github.sha }}
           path: |
             pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk
             pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk.sha256
