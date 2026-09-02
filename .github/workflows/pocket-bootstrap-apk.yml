@@ -3,6 +3,12 @@ name: PIGA Pocket Enterprise Shell APK
 on:
   push:
     branches: ["factory/pocket-enterprise-shell-public-runner-20260903"]
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/pocket-bootstrap-apk.yml"
+      - "pocket-bootstrap/**"
+      - "settings.gradle.kts"
   workflow_dispatch:
 
 permissions:
