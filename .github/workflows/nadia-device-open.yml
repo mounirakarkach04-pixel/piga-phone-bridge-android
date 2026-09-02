@@ -1,0 +1,124 @@
+name: Open Nadias App on paired Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/nadia-device-open.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  open-on-phone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Obtain governed OIDC token
+        id: oidc
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUDIENCE="piga-pocket-enterprise"
+          RESPONSE="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
+          TOKEN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"$RESPONSE")"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve paired device and enqueue URL intent
+        env:
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          ROOT: https://app.pigapocket.com
+          TARGET_URL: https://cdn.jsdelivr.net/gh/mounirakarkach04-pixel/piga-pocket-interface-mesh-preview@nadias-app-public/nadias-app/index.html
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, sys, uuid
+          from datetime import datetime, timedelta, timezone
+
+          root=os.environ['ROOT'].rstrip('/')
+          token=os.environ['OIDC_TOKEN']
+          target=os.environ['TARGET_URL']
+
+          def curl(method,path,body=None):
+              cmd=['curl','--silent','--show-error','--location','--max-time','25','-X',method,root+path,
+                   '-H','Accept: application/json','-H','Authorization: Bearer '+token]
+              if body is not None:
+                  cmd += ['-H','Content-Type: application/json','--data',json.dumps(body,separators=(',',':'))]
+              cmd += ['-w','\n__STATUS__:%{http_code}']
+              p=subprocess.run(cmd,text=True,capture_output=True)
+              out=p.stdout
+              if '\n__STATUS__:' in out:
+                  raw,code=out.rsplit('\n__STATUS__:',1)
+              else:
+                  raw,code=out,'000'
+              try: data=json.loads(raw) if raw.strip() else None
+              except Exception: data=None
+              return int(code) if code.isdigit() else 0,data
+
+          device_ids=[]
+          discovery_paths=['/api/bridge/devices','/api/bridge/admin/devices','/api/devices']
+          for path in discovery_paths:
+              code,data=curl('GET',path)
+              print(f'discovery {path} -> HTTP {code}')
+              if code != 200 or data is None:
+                  continue
+              candidates=[]
+              if isinstance(data,list): candidates=data
+              elif isinstance(data,dict):
+                  for key in ('devices','items','data'):
+                      if isinstance(data.get(key),list): candidates=data[key]; break
+                  if not candidates and any(k in data for k in ('deviceId','id')): candidates=[data]
+              for item in candidates:
+                  if not isinstance(item,dict): continue
+                  did=item.get('deviceId') or item.get('id')
+                  if isinstance(did,str) and did.strip():
+                      revoked=item.get('revoked') is True or str(item.get('status','')).lower() in {'revoked','deleted'}
+                      if not revoked: device_ids.append(did.strip())
+              if device_ids: break
+
+          device_ids=list(dict.fromkeys(device_ids))
+          if len(device_ids) != 1:
+              print(f'FAIL_CLOSED: expected exactly one active paired device, found {len(device_ids)}')
+              sys.exit(42)
+          device_id=device_ids[0]
+
+          now=datetime.now(timezone.utc)
+          command_id='nadia-open-'+uuid.uuid4().hex[:16]
+          nonce=uuid.uuid4().hex
+          body={
+              'commandId':command_id,
+              'type':'url_intent',
+              'capabilityScope':'pocket.intent.url',
+              'nonce':nonce,
+              'expiresAt':(now+timedelta(minutes=10)).isoformat().replace('+00:00','Z'),
+              'leaseUntil':(now+timedelta(minutes=5)).isoformat().replace('+00:00','Z'),
+              'payload':{'url':target},
+              'deviceId':device_id
+          }
+          endpoints=[
+              f'/api/bridge/devices/{device_id}/commands',
+              f'/api/bridge/devices/{device_id}/commands/enqueue',
+              f'/api/bridge/admin/devices/{device_id}/commands',
+              '/api/bridge/commands'
+          ]
+          accepted=False
+          for ep in endpoints:
+              code,data=curl('POST',ep,body)
+              print(f'enqueue candidate -> HTTP {code}')
+              if 200 <= code < 300:
+                  accepted=True
+                  print('URL_INTENT_ENQUEUED')
+                  break
+              if code not in (400,401,403,404,405,409,422):
+                  print('Unexpected response; fail closed')
+                  break
+          if not accepted:
+              print('NO_SUPPORTED_COMMAND_ENQUEUE_ROUTE')
+              sys.exit(43)
+          PY
