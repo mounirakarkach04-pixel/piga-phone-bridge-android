@@ -1,0 +1,15 @@
+{
+  "name": "Kalnbach Operations",
+  "short_name": "Kalnbach",
+  "description": "Kalnbach Operations FIELDTEST – Einsatzplanung, Zeiterfassung und Betriebsorganisation für J. Kalnbach Gebäudereinigung.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef3f6",
+  "theme_color": "#061a2b",
+  "orientation": "any",
+  "lang": "de-DE",
+  "icons": [
+    {"src":"kalnbach-logo.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
