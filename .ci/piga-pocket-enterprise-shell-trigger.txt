@@ -1,0 +1,6 @@
+PIGA Pocket Enterprise shell verification trigger
+package=com.pigapocket.enterprise
+origin=https://app.pigapocket.com
+productionAuthorized=false
+physicalE2ERequired=true
+finalReleaseControlRequired=true
