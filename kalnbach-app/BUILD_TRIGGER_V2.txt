@@ -1,0 +1,1 @@
+Trigger 2026-09-02 bundled UI rebuild. Expected: local android_asset rendering, no Supabase text/plain dependency.
