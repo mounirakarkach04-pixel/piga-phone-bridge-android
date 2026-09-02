@@ -11,8 +11,8 @@ android {
         applicationId = "de.kalnbach.operations"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.0.0-fieldtest"
+        versionCode = 3
+        versionName = "2.1.0-fieldtest"
     }
 
     buildTypes {
