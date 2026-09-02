@@ -74,6 +74,11 @@
             android:stopWithTask="false" />
 
         <receiver
+            android:name=".ManagedInstallResultReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
             android:name=".BootReceiver"
             android:enabled="true"
             android:exported="false">
