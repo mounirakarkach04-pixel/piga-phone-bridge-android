@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PigaPhoneBridgeAndroid"
 include(":app")
+include(":pocket-bootstrap")

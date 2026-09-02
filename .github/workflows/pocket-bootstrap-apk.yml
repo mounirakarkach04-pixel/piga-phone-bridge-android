@@ -1,0 +1,44 @@
+name: PIGA Pocket Bootstrap APK
+
+on:
+  push:
+    branches: ["factory/pocket-bootstrap-public-runner-20260902"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-read-only: false
+      - name: Build bootstrap APK
+        run: gradle :pocket-bootstrap:assembleDebug --build-cache --stacktrace
+      - name: Record evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk
+          test -s "$APK"
+          sha256sum "$APK" > "$APK.sha256"
+          mkdir -p pocket-bootstrap-evidence
+          printf '{"schema":"piga.pocket-bootstrap.v1","commit":"%s","package":"com.pigapocket.bootstrap","targetOrigin":"https://app.pigapocket.com","privateEnterpriseSourceIncluded":false,"publicationAuthorized":false,"completionClaim":"BOOTSTRAP_APK_BUILD_ONLY"}\n' "$GITHUB_SHA" > pocket-bootstrap-evidence/bootstrap.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: piga-pocket-bootstrap-${{ github.sha }}
+          path: |
+            pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk
+            pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk.sha256
+            pocket-bootstrap-evidence/bootstrap.json
+          if-no-files-found: error
+          retention-days: 30
