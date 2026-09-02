@@ -1,0 +1,3 @@
+Kalnbach Operations Android APK build trigger
+Target: standalone HTTPS wrapper
+No Clerk. No showroom. No PIGA enterprise app dependency.
