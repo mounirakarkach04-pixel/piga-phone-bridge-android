@@ -3,15 +3,12 @@ package de.kalnbach.operations
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Bundle
-import android.webkit.CookieManager
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 
 class MainActivity : Activity() {
     private lateinit var webView: WebView
-    private val appUrl = "https://qjvopzschqukitvudgfz.supabase.co/functions/v1/kalnbach-operations"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -19,32 +16,21 @@ class MainActivity : Activity() {
         webView = WebView(this)
         setContentView(webView)
 
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
-
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            databaseEnabled = true
-            allowFileAccess = false
+            databaseEnabled = false
+            allowFileAccess = true
             allowContentAccess = false
             mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            userAgentString = "$userAgentString KalnbachOperationsAndroid/1.0"
+            userAgentString = "$userAgentString KalnbachOperationsAndroid/1.1"
         }
         webView.webChromeClient = WebChromeClient()
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val url = request.url.toString()
-                return if (url.startsWith("https://qjvopzschqukitvudgfz.supabase.co/functions/v1/kalnbach-operations")) {
-                    false
-                } else {
-                    view.loadUrl(url)
-                    true
-                }
-            }
-        }
+        webView.webViewClient = WebViewClient()
 
-        if (savedInstanceState == null) webView.loadUrl(appUrl)
+        if (savedInstanceState == null) {
+            webView.loadUrl("file:///android_asset/index.html")
+        }
     }
 
     override fun onBackPressed() {
