@@ -1,5 +1,5 @@
-const CACHE='kalnbach-static-v5-enterprise-auth';
-const STATIC=['./','./index.html','./app.css','./enterprise.css','./app.js','./enterprise-ui.js','./auth-enhancements.js','./kalnbach-logo.svg','./manifest.webmanifest'];
+const CACHE='kalnbach-static-v6-enterprise-auth';
+const STATIC=['./','./index.html','./app.css','./enterprise.css','./app.js','./enterprise-ui.js','./auth-enhancements.js','./kalnbach-logo.svg','./manifest.json'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(STATIC)).then(()=>self.skipWaiting()))});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
 self.addEventListener('fetch',event=>{const req=event.request,url=new URL(req.url);if(req.method!=='GET')return;if(url.origin!==self.location.origin)return;if(url.pathname.includes('/auth/')||url.pathname.includes('/rest/'))return;event.respondWith(caches.match(req).then(hit=>hit||fetch(req).then(res=>{if(res.ok&&(req.destination==='document'||req.destination==='script'||req.destination==='style'||req.destination==='image'||req.destination==='manifest')){const copy=res.clone();caches.open(CACHE).then(c=>c.put(req,copy))}return res}).catch(()=>caches.match('./index.html'))))});
