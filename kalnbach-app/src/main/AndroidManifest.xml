@@ -4,6 +4,8 @@
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:label="Kalnbach Operations"
+        android:icon="@drawable/kalnbach_app_icon"
+        android:roundIcon="@drawable/kalnbach_app_icon"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
