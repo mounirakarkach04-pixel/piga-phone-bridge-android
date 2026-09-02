@@ -1,0 +1,61 @@
+name: Kalnbach Operations APK
+
+on:
+  push:
+    branches:
+      - build/kalnbach-operations-apk-20260902
+    paths:
+      - 'kalnbach-app/**'
+      - 'settings.gradle.kts'
+      - '.github/workflows/kalnbach-operations-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build Kalnbach APK
+        run: gradle :kalnbach-app:assembleDebug --stacktrace
+
+      - name: Prepare named download
+        run: |
+          cp kalnbach-app/build/outputs/apk/debug/kalnbach-app-debug.apk Kalnbach-Operations.apk
+          sha256sum Kalnbach-Operations.apk > Kalnbach-Operations.apk.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalnbach-Operations-APK
+          path: |
+            Kalnbach-Operations.apk
+            Kalnbach-Operations.apk.sha256
+          if-no-files-found: error
+
+      - name: Publish stable field-test download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete kalnbach-operations-fieldtest --cleanup-tag -y || true
+          gh release create kalnbach-operations-fieldtest Kalnbach-Operations.apk Kalnbach-Operations.apk.sha256 \
+            --title 'Kalnbach Operations – Android Feldtest' \
+            --notes 'Standalone Android Feldtest. Oeffnet ausschliesslich die Kalnbach Operations HTTPS-App. Kein Clerk, kein PIGA Showroom, keine PIGA Enterprise App.' \
+            --prerelease \
+            --target '${{ github.sha }}'
