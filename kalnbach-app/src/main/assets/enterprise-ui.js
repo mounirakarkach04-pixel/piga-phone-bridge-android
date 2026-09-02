@@ -1,0 +1,11 @@
+(()=>{'use strict';
+const SELECTOR='.content';
+const mark='data-enterprise-ui';
+function role(){const t=(document.querySelector('.rolepill')?.textContent||'').toLowerCase();return t.includes('geschäft')?'management':t.includes('mitarbeiter')?'employee':'public'}
+function brandline(){return '<div class="enterprise-brandline" aria-label="Kalnbach Markenwerte"><span>Professionelle Sauberkeit mit System.</span><span>Meisterbetrieb</span><span>Individuelle Lösung</span><span>Diskreter Service</span><span>Schnelle Reaktion</span></div>'}
+function guidance(r){if(r==='management')return '<div class="enterprise-guidance"><div class="eg-icon">GF</div><div><strong>Geschäftsführung</strong><p>Stammdaten und freigegebene Verwaltungsfelder lassen sich über <b>✎</b> bearbeiten. Benutzer, Rechte, Compliance und externe Schnittstellen immer mit Status und Nachweis prüfen.</p><div class="enterprise-micro">Freigegebene Rechnungen bleiben unveränderbar. BLOCK/UNKNOWN wird nicht automatisch zu PASS.</div></div></div>';if(r==='employee')return '<div class="enterprise-guidance"><div class="eg-icon">✓</div><div><strong>Für Ihren Arbeitstag</strong><p>Einsatz öffnen, Arbeitszeit zum tatsächlichen Beginn starten und nach Arbeitsende stoppen. Krank- oder Urlaubsmeldungen nur mit den erforderlichen Angaben erfassen; keine Diagnose eintragen.</p><div class="enterprise-micro">Bei Unklarheiten Einsatz oder Aufgabe öffnen und die dort hinterlegten Hinweise beachten.</div></div></div>';return''}
+function enhance(){const root=document.querySelector(SELECTOR);if(!root)return;const r=role();const hero=root.querySelector('.hero');if(hero&&!hero.hasAttribute(mark)){hero.setAttribute(mark,'1');hero.insertAdjacentHTML('beforeend',brandline())}const g=guidance(r);if(g&&!root.querySelector('.enterprise-guidance')){const install=root.querySelector('.installbar');if(install)install.insertAdjacentHTML('afterend',g);else if(hero)hero.insertAdjacentHTML('afterend',g);else root.insertAdjacentHTML('afterbegin',g)}}
+let queued=false;function schedule(){if(queued)return;queued=true;requestAnimationFrame(()=>{queued=false;enhance()})}
+new MutationObserver(schedule).observe(document.documentElement,{childList:true,subtree:true});
+window.addEventListener('DOMContentLoaded',schedule);schedule();
+})();
