@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Install icon dependency
+        run: sudo apt-get update && sudo apt-get install -y python3-pil
       - name: Prepare PWA site
         run: |
           mkdir -p site
@@ -33,15 +35,10 @@ jobs:
           cp kalnbach-app/src/main/assets/sw.js site/
           cp kalnbach-app/src/main/assets/kalnbach-logo.svg site/
           python3 - <<'PY'
-          from pathlib import Path
-          try:
-              from PIL import Image, ImageDraw
-          except Exception:
-              raise SystemExit('Pillow missing')
+          from PIL import Image, ImageDraw
           for size,name in [(180,'icon-180.png'),(192,'icon-192.png'),(512,'icon-512.png')]:
               im=Image.new('RGB',(size,size),'#08243a')
               d=ImageDraw.Draw(im)
-              # stylized white K
               s=size
               d.polygon([(0.23*s,0.18*s),(0.37*s,0.18*s),(0.37*s,0.44*s),(0.59*s,0.18*s),(0.77*s,0.18*s),(0.52*s,0.48*s),(0.79*s,0.82*s),(0.61*s,0.82*s),(0.42*s,0.57*s),(0.37*s,0.63*s),(0.37*s,0.82*s),(0.23*s,0.82*s)], fill='white')
               d.pieslice((0.12*s,0.53*s,0.92*s,0.98*s), start=12, end=168, fill='#57b957')
