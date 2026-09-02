@@ -8,7 +8,9 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.pigapocket.bridge"
+        // MUST remain identical to the installed v19 package so upgrades preserve
+        // Android app identity, Keystore-backed device identity and pairing state.
+        applicationId = "io.piga.phonebridge.mobile"
         minSdk = 26
         targetSdk = 35
         versionCode = 20
@@ -25,10 +27,9 @@ android {
 
     buildTypes {
         getByName("debug") {
-            // The bridge is a companion runtime and must never replace the
-            // canonical PIGA Pocket application (com.pigapocket.enterprise).
-            // The debug keystore keeps direct device testing installable
-            // without granting any publication authority.
+            // Debug builds remain isolated and must never replace a paired production bridge.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
         }
         getByName("release") {
             isDebuggable = false
