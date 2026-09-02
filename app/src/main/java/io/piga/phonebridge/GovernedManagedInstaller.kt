@@ -13,13 +13,18 @@ import java.security.MessageDigest
 import java.time.Instant
 
 /**
- * Governed managed APK installation core.
+ * Governed APK installation core.
  *
- * This class deliberately has no network downloader and no authority to admit an install.
- * It can only execute after a separate Gate-2 admission has already bound one attempt to
- * one exact device/artifact/package/version/signer/nonce/expiry tuple.
+ * Integrity admission is identical for both modes. Silent installation is admitted only
+ * when this app is a verified Android Device Owner. Existing consumer devices instead use
+ * Android's user-confirmed PackageInstaller flow; pending user action is never success.
  */
 class GovernedManagedInstaller(private val context: Context) {
+    enum class InstallMode {
+        MANAGED_SILENT,
+        USER_CONFIRMED,
+    }
+
     data class Admission(
         val admissionId: String,
         val sourceUrl: String,
@@ -29,6 +34,7 @@ class GovernedManagedInstaller(private val context: Context) {
         val signerSha256: String,
         val nonce: String,
         val expiresAt: Instant,
+        val mode: InstallMode = InstallMode.USER_CONFIRMED,
     )
 
     data class Preflight(
@@ -45,8 +51,17 @@ class GovernedManagedInstaller(private val context: Context) {
         return dpm.isDeviceOwnerApp(context.packageName)
     }
 
+    fun canUseUserConfirmedInstaller(): Boolean {
+        return Build.VERSION.SDK_INT < 26 || context.packageManager.canRequestPackageInstalls()
+    }
+
     fun preflight(apk: File, admission: Admission, now: Instant = Instant.now()): Preflight {
-        if (!isVerifiedDeviceOwner()) return Preflight(false, "DEVICE_OWNER_REQUIRED")
+        if (admission.mode == InstallMode.MANAGED_SILENT && !isVerifiedDeviceOwner()) {
+            return Preflight(false, "DEVICE_OWNER_REQUIRED_FOR_SILENT_INSTALL")
+        }
+        if (admission.mode == InstallMode.USER_CONFIRMED && !canUseUserConfirmedInstaller()) {
+            return Preflight(false, "USER_INSTALL_PERMISSION_REQUIRED")
+        }
         if (admission.expiresAt <= now) return Preflight(false, "ADMISSION_EXPIRED")
         if (admission.admissionId.isBlank() || admission.nonce.length < 16) return Preflight(false, "ADMISSION_IDENTITY_INVALID")
         if (!admission.sourceUrl.startsWith("https://")) return Preflight(false, "HTTPS_ARTIFACT_REQUIRED")
@@ -85,17 +100,25 @@ class GovernedManagedInstaller(private val context: Context) {
         if (observedVersion != admission.versionCode) return Preflight(false, "VERSION_MISMATCH", observedPackage, observedVersion, observedSha, observedSigner)
         if (!observedSigner.equals(admission.signerSha256, ignoreCase = true)) return Preflight(false, "SIGNER_MISMATCH", observedPackage, observedVersion, observedSha, observedSigner)
 
-        return Preflight(true, "ADMITTED", observedPackage, observedVersion, observedSha, observedSigner)
+        return Preflight(true, if (admission.mode == InstallMode.MANAGED_SILENT) "ADMITTED_MANAGED_SILENT" else "ADMITTED_USER_CONFIRMED", observedPackage, observedVersion, observedSha, observedSigner)
     }
 
     fun createAndCommitSession(apk: File, admission: Admission): Int {
         val preflight = preflight(apk, admission)
-        require(preflight.admitted) { "Managed install blocked: ${preflight.reason}" }
+        require(preflight.admitted) { "Governed install blocked: ${preflight.reason}" }
 
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(admission.packageName)
-            if (Build.VERSION.SDK_INT >= 31) setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            if (Build.VERSION.SDK_INT >= 31) {
+                setRequireUserAction(
+                    if (admission.mode == InstallMode.MANAGED_SILENT) {
+                        PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED
+                    } else {
+                        PackageInstaller.SessionParams.USER_ACTION_REQUIRED
+                    }
+                )
+            }
         }
         val sessionId = installer.createSession(params)
         installer.openSession(sessionId).use { session ->
@@ -111,6 +134,7 @@ class GovernedManagedInstaller(private val context: Context) {
                 putExtra(ManagedInstallResultReceiver.EXTRA_PACKAGE_NAME, admission.packageName)
                 putExtra(ManagedInstallResultReceiver.EXTRA_NONCE, admission.nonce)
                 putExtra(ManagedInstallResultReceiver.EXTRA_SESSION_ID, sessionId)
+                putExtra(ManagedInstallResultReceiver.EXTRA_INSTALL_MODE, admission.mode.name)
             }
             val pending = PendingIntent.getBroadcast(
                 context,
