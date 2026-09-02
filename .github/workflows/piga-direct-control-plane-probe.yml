@@ -48,3 +48,5 @@ jobs:
             fi
           done
           test "$found" = "1"
+
+          echo 'direct_control_plane_probe=complete'
