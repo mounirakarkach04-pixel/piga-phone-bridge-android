@@ -18,6 +18,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONObject
+import java.net.URL
 import java.util.Locale
 
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
@@ -68,7 +69,6 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
-                // Voice capture is handled by the bounded native bridge below.
                 request.deny()
             }
         }
@@ -77,9 +77,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            tts?.language = Locale.GERMANY
-        }
+        if (status == TextToSpeech.SUCCESS) tts?.language = Locale.GERMANY
     }
 
     inner class AeiouNativeBridge {
@@ -95,9 +93,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
 
         @JavascriptInterface
-        fun cancelSpeech() {
-            runOnUiThread { tts?.stop() }
-        }
+        fun cancelSpeech() { runOnUiThread { tts?.stop() } }
 
         @JavascriptInterface
         fun startRecognition() {
@@ -116,11 +112,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         }
 
         @JavascriptInterface
-        fun stopRecognition() {
-            runOnUiThread {
-                recognizer?.stopListening()
-            }
-        }
+        fun stopRecognition() { runOnUiThread { recognizer?.stopListening() } }
     }
 
     private fun startBoundedRecognition() {
@@ -140,29 +132,25 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
                     if (text.isBlank()) emitRecognitionError("empty_result") else emitRecognitionResult(text)
                 }
             })
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            val recognitionIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
             }
-            speech.startListening(intent)
+            speech.startListening(recognitionIntent)
         }
     }
 
     private fun emitRecognitionResult(text: String) {
         val quoted = JSONObject.quote(text.take(500))
-        webView.post {
-            webView.evaluateJavascript("window.__aeiouRecognitionResult && window.__aeiouRecognitionResult($quoted);", null)
-        }
+        webView.post { webView.evaluateJavascript("window.__aeiouRecognitionResult && window.__aeiouRecognitionResult($quoted);", null) }
     }
 
     private fun emitRecognitionError(code: String) {
         val quoted = JSONObject.quote(code)
-        webView.post {
-            webView.evaluateJavascript("window.__aeiouRecognitionError && window.__aeiouRecognitionError($quoted);", null)
-        }
+        webView.post { webView.evaluateJavascript("window.__aeiouRecognitionError && window.__aeiouRecognitionError($quoted);", null) }
     }
 
     private fun injectNativeVoicePolyfill() {
@@ -196,11 +184,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         if (requestCode == MIC_REQUEST) {
             val retry = recognitionPending
             recognitionPending = false
-            if (retry && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-                startBoundedRecognition()
-            } else if (retry) {
-                emitRecognitionError("permission_denied")
-            }
+            if (retry && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startBoundedRecognition()
+            else if (retry) emitRecognitionError("permission_denied")
         }
     }
 
@@ -215,10 +200,37 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val target = if (deepLink?.scheme == "aeiou") {
             val suffix = deepLink.path?.trimStart('/').orEmpty()
             if (suffix.isBlank()) APP_ORIGIN else APP_ORIGIN + suffix
-        } else {
-            APP_ORIGIN
-        }
-        webView.loadUrl(target)
+        } else APP_ORIGIN
+        loadGovernedHtml(target)
+    }
+
+    private fun loadGovernedHtml(target: String) {
+        val parsed = Uri.parse(target)
+        val allowed = parsed.scheme == "https" && parsed.host == APP_HOST && (parsed.path ?: "").startsWith(APP_PATH)
+        if (!allowed) return
+        Thread {
+            runCatching {
+                val separator = if (target.contains("?")) "&" else "?"
+                val connection = URL(target + separator + "native_render=1&t=" + System.currentTimeMillis()).openConnection().apply {
+                    connectTimeout = 15000
+                    readTimeout = 20000
+                    setRequestProperty("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1")
+                    setRequestProperty("User-Agent", "AEIOU-Android-RC2/1.0")
+                }
+                val html = connection.getInputStream().bufferedReader(Charsets.UTF_8).use { it.readText() }
+                require(html.contains("<html", ignoreCase = true) && html.contains("AEIOU")) { "Invalid AEIOU HTML payload" }
+                runOnUiThread { webView.loadDataWithBaseURL(APP_ORIGIN, html, "text/html", "UTF-8", target) }
+            }.onFailure { err ->
+                val safe = android.text.TextUtils.htmlEncode(err.message ?: "Unbekannter Ladefehler")
+                runOnUiThread {
+                    webView.loadDataWithBaseURL(
+                        APP_ORIGIN,
+                        "<html><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><body style=\"font-family:sans-serif;padding:24px\"><h2>AEIOU konnte nicht geladen werden</h2><p>" + safe + "</p></body></html>",
+                        "text/html", "UTF-8", null
+                    )
+                }
+            }
+        }.start()
     }
 
     @Deprecated("Deprecated in Java")
