@@ -1,4 +1,4 @@
-name: Publish AEIOU RC1 APK direct
+name: Publish AEIOU RC1 GitHub Release
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -18,13 +18,14 @@ jobs:
       RUN_ID: "33700568817"
       ARTIFACT: "aeiou-android-rc1-463833e636719c71919743f1cde9f2cf01c310ae"
       EXPECTED_SHA256: "b30071ba7c200522ea4aa5381227a34ff088ba52b0ba279244897ad66db9b5d7"
+      TAG: "aeiou-android-rc1-20260903"
     steps:
       - uses: actions/checkout@v6
         with:
           ref: factory/aeiou-shell-public-runner-20260903
-      - name: Download already-verified RC1 artifact
+      - name: Download verified RC1 artifact
         run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT" --dir dist
-      - name: Verify exact APK and publish stable direct file
+      - name: Verify exact APK
         shell: bash
         run: |
           set -euo pipefail
@@ -32,16 +33,14 @@ jobs:
           test -s "$APK"
           ACTUAL="$(sha256sum "$APK" | awk '{print $1}')"
           test "$ACTUAL" = "$EXPECTED_SHA256"
-          mkdir -p public
-          cp "$APK" public/AEIOU-Android-RC1.apk
-          printf '%s  %s\n' "$ACTUAL" 'AEIOU-Android-RC1.apk' > public/AEIOU-Android-RC1.apk.sha256
-      - name: Commit stable public download target
+          cp "$APK" AEIOU-Android-RC1.apk
+          printf '%s  %s\n' "$ACTUAL" 'AEIOU-Android-RC1.apk' > AEIOU-Android-RC1.apk.sha256
+      - name: Create or update GitHub release asset
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "piga-release-worker"
-          git config user.email "actions@users.noreply.github.com"
-          git add public/AEIOU-Android-RC1.apk public/AEIOU-Android-RC1.apk.sha256
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "release(aeiou): publish verified Android RC1 APK"
-          git push origin HEAD:factory/aeiou-shell-public-runner-20260903
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" AEIOU-Android-RC1.apk AEIOU-Android-RC1.apk.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" AEIOU-Android-RC1.apk AEIOU-Android-RC1.apk.sha256 --repo "$GITHUB_REPOSITORY" --target factory/aeiou-shell-public-runner-20260903 --title "AEIOU Android RC1" --notes "Verified AEIOU Android RC1. Package: com.pigapocket.aeiou. SHA256: $EXPECTED_SHA256. Preview/RC only; no production-store publication claim."
+          fi
