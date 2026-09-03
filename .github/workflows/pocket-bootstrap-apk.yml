@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-enterprise-shell:
@@ -48,3 +48,26 @@ jobs:
             pocket-bootstrap-evidence/bootstrap.json
           if-no-files-found: error
           retention-days: 30
+      - name: Publish bounded prerelease
+        if: github.event_name == 'push' && github.ref == 'refs/heads/factory/pocket-enterprise-shell-public-runner-20260903'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk
+          SHA_FILE="$APK.sha256"
+          EVIDENCE=pocket-bootstrap-evidence/bootstrap.json
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          TAG="piga-pocket-shell-${SHORT_SHA}"
+          cp "$APK" piga-pocket-enterprise-shell.apk
+          cp "$SHA_FILE" piga-pocket-enterprise-shell.apk.sha256
+          cp "$EVIDENCE" piga-pocket-enterprise-shell-evidence.json
+          gh release create "$TAG" \
+            piga-pocket-enterprise-shell.apk \
+            piga-pocket-enterprise-shell.apk.sha256 \
+            piga-pocket-enterprise-shell-evidence.json \
+            --target "$GITHUB_SHA" \
+            --title "PIGA Pocket Enterprise Shell ${SHORT_SHA}" \
+            --notes "Internal preview shell only. Package: com.pigapocket.enterprise. Target: https://app.pigapocket.com. Production authorization remains blocked pending physical E2E, A7SEM Reverse, and Final Release Control." \
+            --prerelease
