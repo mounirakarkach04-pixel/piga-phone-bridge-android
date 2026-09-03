@@ -1,0 +1,29 @@
+name: AEIOU Runtime MIME Probe
+
+on:
+  push:
+    branches: ["factory/aeiou-shell-public-runner-20260903"]
+    paths: [".github/workflows/aeiou-runtime-probe.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify live AEIOU HTML response
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://qjvopzschqukitvudgfz.supabase.co/functions/v1/aeiou-kids-app/?probe=${GITHUB_SHA}"
+          curl -fsS -D headers.txt -o body.html "$URL"
+          cat headers.txt
+          grep -qi '^content-type: text/html' headers.txt
+          grep -qi '^x-aeiou-build:' headers.txt
+          head -c 32 body.html | grep -qi '<!doctype html>'
+          grep -q 'AEIOU' body.html
+          grep -q 'Noor Stories' body.html
+          echo 'AEIOU_RUNTIME_HTML_PASS'
