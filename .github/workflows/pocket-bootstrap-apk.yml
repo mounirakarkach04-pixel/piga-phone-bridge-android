@@ -2,7 +2,10 @@ name: PIGA Pocket Enterprise Shell APK
 
 on:
   push:
-    branches: ["factory/pocket-enterprise-shell-public-runner-20260903"]
+    branches:
+      - "factory/pocket-enterprise-shell-public-runner-20260903"
+      - "fix/pocket-clerk-recovery-v19-20260903"
+      - "main"
   pull_request:
     branches: ["main"]
     paths:
@@ -24,6 +27,37 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Verify live Clerk recovery precondition
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pocket-bootstrap-evidence
+          python - <<'PY'
+          import json, re, urllib.request
+
+          origin = 'https://app.pigapocket.com'
+          key = 'pk_live_Y2xlcmsuYXBwLnBpZ2Fwb2NrZXQuY29tJA'
+          marker = "const E='',A=void 0"
+          req = urllib.request.Request(origin + '/', headers={'User-Agent':'PIGA-Pocket-Recovery-Build/1.0'})
+          with urllib.request.urlopen(req, timeout=20) as response:
+              html = response.read().decode('utf-8', 'strict')
+          match = re.search(r'<script[^>]+src=["\'](/_expo/static/js/web/index-[A-Za-z0-9_-]+\.js)["\']', html)
+          if not match:
+              raise SystemExit('canonical Expo web bundle path not found')
+          bundle_path = match.group(1)
+          req = urllib.request.Request(origin + bundle_path, headers={'User-Agent':'PIGA-Pocket-Recovery-Build/1.0','Accept-Encoding':'identity'})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              source = response.read().decode('utf-8', 'strict')
+          key_present = key in source
+          marker_count = source.count(marker)
+          if not key_present and marker_count != 1:
+              raise SystemExit(f'fail-closed: key absent and exact empty-key marker count is {marker_count}')
+          mode = 'PASS_THROUGH_CANONICAL_KEY' if key_present else 'EXACT_PUBLIC_KEY_RECOVERY_REQUIRED'
+          with open('pocket-bootstrap-evidence/runtime-preflight.json','w',encoding='utf-8') as f:
+              json.dump({'schema':'piga.pocket-clerk-recovery-preflight.v1','origin':origin,'bundlePath':bundle_path,'canonicalKeyAlreadyPresent':key_present,'exactEmptyKeyMarkerCount':marker_count,'mode':mode,'authority':'none'}, f, separators=(',',':'))
+              f.write('\n')
+          print(mode, bundle_path)
+          PY
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
@@ -37,14 +71,14 @@ jobs:
           APK=pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk
           test -s "$APK"
           sha256sum "$APK" > "$APK.sha256"
-          mkdir -p pocket-bootstrap-evidence
-          printf '{"schema":"piga.pocket-enterprise-shell.v1","commit":"%s","package":"com.pigapocket.enterprise","targetOrigin":"https://app.pigapocket.com","privateEnterpriseSourceIncluded":false,"voicePermission":"origin-bound","publicationAuthorized":false,"completionClaim":"ENTERPRISE_WEB_SHELL_APK_BUILD_ONLY"}\n' "$GITHUB_SHA" > pocket-bootstrap-evidence/bootstrap.json
+          printf '{"schema":"piga.pocket-enterprise-shell.v2","commit":"%s","package":"com.pigapocket.enterprise","versionCode":10003,"versionName":"1.0.3-clerk-recovery","targetOrigin":"https://app.pigapocket.com","privateEnterpriseSourceIncluded":false,"clerkRecovery":"exact-public-publishable-key-runtime-intercept","phoneBridgeChanged":false,"phoneBridgeCompatibility":"v19-unchanged","voicePermission":"origin-bound","publicationAuthorized":false,"completionClaim":"ENTERPRISE_WEB_SHELL_CLERK_RECOVERY_BUILD_ONLY"}\n' "$GITHUB_SHA" > pocket-bootstrap-evidence/bootstrap.json
       - uses: actions/upload-artifact@v4
         with:
-          name: piga-pocket-enterprise-shell-${{ github.sha }}
+          name: piga-pocket-enterprise-clerk-recovery-${{ github.sha }}
           path: |
             pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk
             pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk.sha256
             pocket-bootstrap-evidence/bootstrap.json
+            pocket-bootstrap-evidence/runtime-preflight.json
           if-no-files-found: error
           retention-days: 30
