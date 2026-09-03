@@ -1,0 +1,2 @@
+PIGA Pocket Enterprise Clerk runtime recovery for the Android shell.
+Phone Bridge remains v19 unchanged. This file is build evidence only.
