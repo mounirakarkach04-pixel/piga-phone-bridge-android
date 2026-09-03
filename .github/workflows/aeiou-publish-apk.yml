@@ -1,0 +1,47 @@
+name: Publish AEIOU RC1 APK direct
+
+on:
+  push:
+    branches: ["factory/aeiou-shell-public-runner-20260903"]
+    paths: [".github/workflows/aeiou-publish-apk.yml"]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: "33700568817"
+      ARTIFACT: "aeiou-android-rc1-463833e636719c71919743f1cde9f2cf01c310ae"
+      EXPECTED_SHA256: "b30071ba7c200522ea4aa5381227a34ff088ba52b0ba279244897ad66db9b5d7"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: factory/aeiou-shell-public-runner-20260903
+      - name: Download already-verified RC1 artifact
+        run: gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT" --dir dist
+      - name: Verify exact APK and publish stable direct file
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="dist/pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk"
+          test -s "$APK"
+          ACTUAL="$(sha256sum "$APK" | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED_SHA256"
+          mkdir -p public
+          cp "$APK" public/AEIOU-Android-RC1.apk
+          printf '%s  %s\n' "$ACTUAL" 'AEIOU-Android-RC1.apk' > public/AEIOU-Android-RC1.apk.sha256
+      - name: Commit stable public download target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "piga-release-worker"
+          git config user.email "actions@users.noreply.github.com"
+          git add public/AEIOU-Android-RC1.apk public/AEIOU-Android-RC1.apk.sha256
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "release(aeiou): publish verified Android RC1 APK"
+          git push origin HEAD:factory/aeiou-shell-public-runner-20260903
