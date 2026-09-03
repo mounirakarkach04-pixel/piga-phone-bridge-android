@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-enterprise-shell:
@@ -82,3 +82,30 @@ jobs:
             pocket-bootstrap-evidence/runtime-preflight.json
           if-no-files-found: error
           retention-days: 30
+      - name: Publish immutable Clerk recovery prerelease
+        if: ${{ github.ref == 'refs/heads/main' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="piga-pocket-clerk-recovery-${GITHUB_SHA:0:12}"
+          APK="pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk"
+          cp "$APK" piga-pocket-enterprise-clerk-recovery.apk
+          cp "$APK.sha256" piga-pocket-enterprise-clerk-recovery.apk.sha256
+          cat > release-notes.md <<'EOF'
+          PIGA Pocket Enterprise Android web-shell Clerk recovery build.
+
+          Scope: exact bounded recovery for the missing public Clerk publishable key in the currently served app.pigapocket.com Expo web bundle. The shell remains package com.pigapocket.enterprise, keeps Phone Bridge v19 compatibility, does not include private Enterprise source, and does not change PIGA engine/action authority.
+
+          This is a prerelease/field-test APK. Full native React-Native parity and production authorization remain separate Final Release Control items.
+          EOF
+          gh release create "$TAG" \
+            --title "PIGA Pocket Clerk Recovery ${GITHUB_SHA:0:12}" \
+            --notes-file release-notes.md \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            piga-pocket-enterprise-clerk-recovery.apk \
+            piga-pocket-enterprise-clerk-recovery.apk.sha256 \
+            pocket-bootstrap-evidence/bootstrap.json \
+            pocket-bootstrap-evidence/runtime-preflight.json
