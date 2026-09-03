@@ -1,0 +1,57 @@
+name: AEIOU RC2 Render Fix
+
+on:
+  push:
+    branches: ["factory/aeiou-shell-public-runner-20260903"]
+    paths: [".github/workflows/aeiou-rc2-patch.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: factory/aeiou-shell-public-runner-20260903
+      - name: Patch native HTML renderer and RC2 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          p=Path('pocket-bootstrap/src/main/java/com/pigapocket/bootstrap/MainActivity.kt')
+          s=p.read_text()
+          if 'import java.net.URL' not in s:
+              s=s.replace('import java.util.Locale\n','import java.util.Locale\nimport java.net.URL\n')
+          old='''        webView.loadUrl(target)\n    }'''
+          new='''        loadGovernedHtml(target)\n    }\n\n    private fun loadGovernedHtml(target: String) {\n        val parsed = Uri.parse(target)\n        val allowed = parsed.scheme == "https" && parsed.host == APP_HOST && (parsed.path ?: "").startsWith(APP_PATH)\n        if (!allowed) return\n        Thread {\n            runCatching {\n                val separator = if (target.contains("?")) "&" else "?"\n                val connection = URL(target + separator + "native_render=1&t=" + System.currentTimeMillis()).openConnection().apply {\n                    connectTimeout = 15000\n                    readTimeout = 20000\n                    setRequestProperty("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1")\n                    setRequestProperty("User-Agent", "AEIOU-Android-RC2/1.0")\n                }\n                val html = connection.getInputStream().bufferedReader(Charsets.UTF_8).use { it.readText() }\n                require(html.contains("<html", ignoreCase = true) && html.contains("AEIOU")) { "Invalid AEIOU HTML payload" }\n                runOnUiThread {\n                    webView.loadDataWithBaseURL(APP_ORIGIN, html, "text/html", "UTF-8", target)\n                }\n            }.onFailure { err ->\n                val safe = android.text.TextUtils.htmlEncode(err.message ?: "Unbekannter Ladefehler")\n                runOnUiThread {\n                    webView.loadDataWithBaseURL(\n                        APP_ORIGIN,\n                        "<html><meta name=\\"viewport\\" content=\\"width=device-width,initial-scale=1\\"><body style=\\"font-family:sans-serif;padding:24px\\"><h2>AEIOU konnte nicht geladen werden</h2><p>" + safe + "</p></body></html>",\n                        "text/html", "UTF-8", null\n                    )\n                }\n            }\n        }.start()\n    }'''
+          if old not in s:
+              raise SystemExit('MainActivity anchor not found')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+
+          p=Path('pocket-bootstrap/build.gradle.kts')
+          s=p.read_text().replace('versionCode = 10001','versionCode = 10002').replace('versionName = "1.0.0-rc1"','versionName = "1.0.0-rc2"')
+          p.write_text(s)
+
+          p=Path('.github/workflows/pocket-bootstrap-apk.yml')
+          s=p.read_text()
+          s=s.replace('versionCode":10001','versionCode":10002').replace('versionName":"1.0.0-rc1"','versionName":"1.0.0-rc2"')
+          s=s.replace('"nativeTtsBridge":true','"nativeHtmlRenderBridge":true,"nativeTtsBridge":true')
+          s=s.replace('aeiou-android-rc1-${{ github.sha }}','aeiou-android-rc2-${{ github.sha }}')
+          p.write_text(s)
+          PY
+      - name: Commit RC2 fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "piga-aeiou-worker"
+          git config user.email "actions@users.noreply.github.com"
+          git add pocket-bootstrap/src/main/java/com/pigapocket/bootstrap/MainActivity.kt pocket-bootstrap/build.gradle.kts .github/workflows/pocket-bootstrap-apk.yml
+          git diff --cached --check
+          git commit -m "fix(aeiou): render governed HTML natively in Android RC2"
+          git push origin HEAD:factory/aeiou-shell-public-runner-20260903
