@@ -1,0 +1,67 @@
+name: PIGA Pocket Recovery Smoke
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/piga-pocket-recovery-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify install-free recovery entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-pocket-web-recovery'
+          KEY='pk_live_Y2xlcmsuYXBwLnBpZ2Fwb2NrZXQuY29tJA'
+          EMPTY="const E='',A=void 0"
+          mkdir -p evidence
+          curl -fsSL --retry 2 --max-time 30 -D evidence/headers.txt "$BASE" -o evidence/index.html
+          grep -qi 'x-piga-recovery: clerk-public-key-exact-v1' evidence/headers.txt
+          grep -q 'meta name="piga-recovery" content="clerk-public-key-exact-v1"' evidence/index.html
+          python - <<'PY'
+          import json,re
+          html=open('evidence/index.html',encoding='utf-8').read()
+          m=re.search(r'<script[^>]+src=["\']([^"\']*/functions/v1/piga-pocket-web-recovery/_expo/static/js/web/index-[A-Za-z0-9_-]+\.js)["\']',html)
+          if not m: raise SystemExit('recovery bundle URL not found')
+          open('evidence/bundle-url.txt','w',encoding='utf-8').write(m.group(1)+'\n')
+          print(m.group(1))
+          PY
+          BUNDLE="$(cat evidence/bundle-url.txt)"
+          curl -fsSL --retry 2 --max-time 45 -D evidence/bundle-headers.txt "$BUNDLE" -o evidence/bundle.js
+          grep -qi 'x-piga-recovery: clerk-public-key-exact-v1' evidence/bundle-headers.txt
+          grep -Fq "$KEY" evidence/bundle.js
+          if grep -Fq "$EMPTY" evidence/bundle.js; then
+            echo 'fail-closed: empty Clerk marker still present' >&2
+            exit 1
+          fi
+          python - <<'PY'
+          import hashlib,json
+          html=open('evidence/index.html','rb').read(); js=open('evidence/bundle.js','rb').read()
+          out={
+            'schema':'piga.pocket.recovery.smoke.v1',
+            'status':'PASS',
+            'entry':'https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-pocket-web-recovery',
+            'htmlSha256':hashlib.sha256(html).hexdigest(),
+            'bundleSha256':hashlib.sha256(js).hexdigest(),
+            'clerkPublicKeyPresent':True,
+            'emptyClerkMarkerPresent':False,
+            'authorityExpansion':False,
+            'mode':'install-free-read-only-recovery-proxy'
+          }
+          open('evidence/result.json','w',encoding='utf-8').write(json.dumps(out,separators=(',',':'))+'\n')
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: piga-pocket-recovery-smoke-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
