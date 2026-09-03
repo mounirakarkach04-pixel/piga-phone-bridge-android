@@ -11,8 +11,8 @@ android {
         applicationId = "com.pigapocket.aeiou"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10001
-        versionName = "1.0.0-rc1"
+        versionCode = 10002
+        versionName = "1.0.0-rc2"
     }
 
     buildTypes {
