@@ -1,24 +1,16 @@
-name: PIGA Pocket Enterprise Shell APK
+name: AEIOU Android RC APK
 
 on:
   push:
     branches:
-      - "factory/pocket-enterprise-shell-public-runner-20260903"
-      - "fix/pocket-clerk-recovery-v19-20260903"
-      - "main"
-  pull_request:
-    branches: ["main"]
-    paths:
-      - ".github/workflows/pocket-bootstrap-apk.yml"
-      - "pocket-bootstrap/**"
-      - "settings.gradle.kts"
+      - "factory/aeiou-shell-public-runner-20260903"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-enterprise-shell:
+  build-aeiou-shell:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -27,54 +19,52 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Verify live Clerk recovery precondition
+      - name: Verify canonical AEIOU web RC
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p pocket-bootstrap-evidence
           python - <<'PY'
-          import json, re, urllib.request
-
-          origin = 'https://app.pigapocket.com'
-          key = 'pk_live_Y2xlcmsuYXBwLnBpZ2Fwb2NrZXQuY29tJA'
-          marker = "const E='',A=void 0"
-          req = urllib.request.Request(origin + '/', headers={'User-Agent':'PIGA-Pocket-Recovery-Build/1.0'})
-          with urllib.request.urlopen(req, timeout=20) as response:
-              html = response.read().decode('utf-8', 'strict')
-          match = re.search(r'<script[^>]+src=["\'](/_expo/static/js/web/index-[A-Za-z0-9_-]+\.js)["\']', html)
-          if not match:
-              raise SystemExit('canonical Expo web bundle path not found')
-          bundle_path = match.group(1)
-          req = urllib.request.Request(origin + bundle_path, headers={'User-Agent':'PIGA-Pocket-Recovery-Build/1.0','Accept-Encoding':'identity'})
-          with urllib.request.urlopen(req, timeout=30) as response:
-              source = response.read().decode('utf-8', 'strict')
-          key_present = key in source
-          marker_count = source.count(marker)
-          if not key_present and marker_count != 1:
-              raise SystemExit(f'fail-closed: key absent and exact empty-key marker count is {marker_count}')
-          mode = 'PASS_THROUGH_CANONICAL_KEY' if key_present else 'EXACT_PUBLIC_KEY_RECOVERY_REQUIRED'
+          import hashlib, json, urllib.request
+          origin='https://qjvopzschqukitvudgfz.supabase.co/functions/v1/aeiou-kids-app/'
+          health=origin+'health'
+          headers={'User-Agent':'AEIOU-Android-RC-Builder/1.0','Accept-Encoding':'identity'}
+          with urllib.request.urlopen(urllib.request.Request(health,headers=headers),timeout=20) as r:
+              status=r.status
+              body=r.read().decode('utf-8','strict')
+          if status != 200:
+              raise SystemExit(f'health HTTP {status}')
+          data=json.loads(body)
+          if data.get('status')!='PASS' or data.get('app')!='AEIOU':
+              raise SystemExit(f'fail-closed health payload: {data}')
+          with urllib.request.urlopen(urllib.request.Request(origin,headers=headers),timeout=25) as r:
+              html=r.read().decode('utf-8','strict')
+          required=['AEIOU','Noor Stories','Amina','Singmodus']
+          missing=[x for x in required if x not in html]
+          if missing:
+              raise SystemExit(f'missing runtime markers: {missing}')
+          evidence={'schema':'aeiou.android-shell-preflight.v1','origin':origin,'health':data,'htmlSha256':hashlib.sha256(html.encode()).hexdigest(),'requiredMarkers':required,'missing':missing,'authority':'build-evidence-only'}
           with open('pocket-bootstrap-evidence/runtime-preflight.json','w',encoding='utf-8') as f:
-              json.dump({'schema':'piga.pocket-clerk-recovery-preflight.v1','origin':origin,'bundlePath':bundle_path,'canonicalKeyAlreadyPresent':key_present,'exactEmptyKeyMarkerCount':marker_count,'mode':mode,'authority':'none'}, f, separators=(',',':'))
-              f.write('\n')
-          print(mode, bundle_path)
+              json.dump(evidence,f,separators=(',',':'));f.write('\n')
+          print('AEIOU_WEB_RC_PASS',data.get('build'))
           PY
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
           cache-read-only: false
-      - name: Build enterprise shell APK
+      - name: Build AEIOU Android RC APK
         run: gradle :pocket-bootstrap:assembleDebug --build-cache --stacktrace
-      - name: Record evidence
+      - name: Record governed build evidence
         shell: bash
         run: |
           set -euo pipefail
           APK=pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk
           test -s "$APK"
           sha256sum "$APK" > "$APK.sha256"
-          printf '{"schema":"piga.pocket-enterprise-shell.v2","commit":"%s","package":"com.pigapocket.enterprise","versionCode":10003,"versionName":"1.0.3-clerk-recovery","targetOrigin":"https://app.pigapocket.com","privateEnterpriseSourceIncluded":false,"clerkRecovery":"exact-public-publishable-key-runtime-intercept","phoneBridgeChanged":false,"phoneBridgeCompatibility":"v19-unchanged","voicePermission":"origin-bound","publicationAuthorized":false,"completionClaim":"ENTERPRISE_WEB_SHELL_CLERK_RECOVERY_BUILD_ONLY"}\n' "$GITHUB_SHA" > pocket-bootstrap-evidence/bootstrap.json
+          printf '{"schema":"aeiou.android-shell.v1","commit":"%s","package":"com.pigapocket.aeiou","versionCode":10001,"versionName":"1.0.0-rc1","targetOrigin":"https://qjvopzschqukitvudgfz.supabase.co/functions/v1/aeiou-kids-app/","nativeTtsBridge":true,"nativeSpeechRecognitionBridge":true,"webAudioSingMode":true,"privateEnterpriseSourceIncluded":false,"productionPublicationAuthorized":false,"completionClaim":"ANDROID_RC_APK_BUILD_EVIDENCE_ONLY"}\n' "$GITHUB_SHA" > pocket-bootstrap-evidence/bootstrap.json
       - uses: actions/upload-artifact@v4
         with:
-          name: piga-pocket-enterprise-clerk-recovery-${{ github.sha }}
+          name: aeiou-android-rc1-${{ github.sha }}
           path: |
             pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk
             pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk.sha256

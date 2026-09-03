@@ -8,11 +8,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.pigapocket.enterprise"
+        applicationId = "com.pigapocket.aeiou"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10003
-        versionName = "1.0.3-clerk-recovery"
+        versionCode = 10001
+        versionName = "1.0.0-rc1"
     }
 
     buildTypes {
