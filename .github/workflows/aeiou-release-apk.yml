@@ -1,0 +1,43 @@
+name: Release AEIOU RC1 APK
+
+on:
+  push:
+    branches: ["factory/aeiou-shell-public-runner-20260903"]
+    paths: [".github/workflows/aeiou-release-apk.yml"]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: "33700568817"
+      SOURCE_ARTIFACT: "aeiou-android-rc1-463833e636719c71919743f1cde9f2cf01c310ae"
+      EXPECTED_SHA256: "b30071ba7c200522ea4aa5381227a34ff088ba52b0ba279244897ad66db9b5d7"
+      TAG: "aeiou-android-rc1"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download verified APK artifact
+        run: gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$SOURCE_ARTIFACT" --dir dist
+      - name: Verify exact APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="dist/pocket-bootstrap/build/outputs/apk/debug/pocket-bootstrap-debug.apk"
+          test -s "$APK"
+          ACTUAL="$(sha256sum "$APK" | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED_SHA256"
+          cp "$APK" AEIOU-Android-RC1.apk
+      - name: Publish as GitHub release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" AEIOU-Android-RC1.apk --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" AEIOU-Android-RC1.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "AEIOU Android RC1" --notes "Governed AEIOU Android RC1. Package: com.pigapocket.aeiou. SHA256: b30071ba7c200522ea4aa5381227a34ff088ba52b0ba279244897ad66db9b5d7. Preview/field-test build."
+          fi
