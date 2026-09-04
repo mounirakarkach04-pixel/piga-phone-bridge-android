@@ -124,6 +124,13 @@ class BridgeService : Service() {
         val expiresAt = command.optString("expiresAt")
         val leaseUntil = command.optString("leaseUntil")
         val payload = command.optJSONObject("payload")
+        val actorContext = command.optJSONObject("actorContext") ?: payload?.optJSONObject("workerContext")
+        val actorType = actorContext?.optString("actorType")?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        val workerId = actorContext?.optString("workerId")?.trim().orEmpty()
+        val ticketId = actorContext?.optString("ticketId")?.trim().orEmpty()
+        val managerId = actorContext?.optString("managerId")?.trim().orEmpty()
+        val actorCapability = actorContext?.optString("capabilityScope")?.trim().orEmpty()
+        val workerExecution = actorType == "worker" || workerId.isNotBlank()
 
         val allowed = mapOf(
             "local_notification" to "pocket.notification",
@@ -138,6 +145,13 @@ class BridgeService : Service() {
         if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
             if (commandId.isNotBlank()) sendResult(root, deviceId, pairingId, commandId, "rejected", "Command schema or allowlist rejected.")
             return
+        }
+        if (workerExecution) {
+            val idPattern = Regex("^[A-Za-z0-9._:-]{3,160}$")
+            if (actorType != "worker" || !workerId.matches(idPattern) || !ticketId.matches(idPattern) || (managerId.isNotBlank() && !managerId.matches(idPattern)) || actorCapability != scope) {
+                sendResult(root, deviceId, pairingId, commandId, "rejected", "Worker Device Persona lineage or capability binding rejected.")
+                return
+            }
         }
 
         val factoryCorrelation = try {
@@ -211,6 +225,16 @@ class BridgeService : Service() {
         }
 
         sendAck(root, deviceId, pairingId, commandId, "accepted")
+        if (workerExecution) {
+            require(prefs.edit()
+                .putString("last_worker_id", workerId)
+                .putString("last_worker_ticket_id", ticketId)
+                .putString("last_worker_manager_id", managerId)
+                .putString("last_worker_capability", scope)
+                .putString("last_worker_command_id", commandId)
+                .putLong("last_worker_execution_ms", System.currentTimeMillis())
+                .commit()) { "Unable to persist Worker Device Persona lineage before execution." }
+        }
         require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {
             "Unable to persist command nonce before execution."
         }
