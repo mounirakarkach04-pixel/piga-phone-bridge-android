@@ -1,0 +1,271 @@
+name: Full Autonomy Telephony
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/full-autonomy-telephony.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  telephony:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Add autonomous telephony capability
+        shell: python
+        run: |
+          from pathlib import Path
+
+          service = Path('app/src/main/java/io/piga/phonebridge/BridgeService.kt')
+          text = service.read_text()
+
+          if 'import android.telecom.TelecomManager' not in text:
+              text = text.replace('import android.speech.tts.TextToSpeech\n', 'import android.speech.tts.TextToSpeech\nimport android.telecom.TelecomManager\n')
+
+          allowed_anchor = '''            "supported_app_launch" to "pocket.app.launch",
+            "share_text" to "pocket.share.text",
+'''
+          allowed_insert = '''            "supported_app_launch" to "pocket.app.launch",
+            "share_text" to "pocket.share.text",
+            "phone_call" to "pocket.phone.call",
+            "phone_hangup" to "pocket.phone.hangup",
+'''
+          if '"phone_call" to "pocket.phone.call"' not in text:
+              if allowed_anchor not in text:
+                  raise SystemExit('A7SEM_BLOCK: service allowlist anchor missing')
+              text = text.replace(allowed_anchor, allowed_insert, 1)
+
+          dispatch_anchor = '''                "supported_app_launch" -> executeAppLaunch(payload)
+                "share_text" -> executeShareText(payload)
+'''
+          dispatch_insert = '''                "supported_app_launch" -> executeAppLaunch(payload)
+                "share_text" -> executeShareText(payload)
+                "phone_call" -> executePhoneCall(payload)
+                "phone_hangup" -> executePhoneHangup(payload)
+'''
+          if '"phone_call" -> executePhoneCall(payload)' not in text:
+              if dispatch_anchor not in text:
+                  raise SystemExit('A7SEM_BLOCK: service dispatch anchor missing')
+              text = text.replace(dispatch_anchor, dispatch_insert, 1)
+
+          method_anchor = '''    private fun executeOrchestrationPlanVerify(payload: JSONObject): String {
+'''
+          methods = r'''    private fun executePhoneCall(payload: JSONObject): String {
+        require(Build.VERSION.SDK_INT >= 23) { "Direct telephony requires Android 6+." }
+        require(checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+            "CALL_PHONE permission missing."
+        }
+        val raw = payload.optString("number").trim()
+        require(raw.matches(Regex("^[+0-9 ()-]{3,40}$"))) { "Phone number invalid." }
+        val uri = Uri.fromParts("tel", raw, null)
+        val telecom = getSystemService(TelecomManager::class.java)
+            ?: throw IllegalStateException("Telecom service unavailable.")
+        if (Build.VERSION.SDK_INT >= 29) {
+            require(!telecom.isEmergencyNumber(raw)) { "Emergency numbers are never admitted for autonomous calling." }
+        } else {
+            val digits = raw.filter { it.isDigit() }
+            require(digits !in setOf("112", "911", "999", "110")) { "Emergency numbers are never admitted for autonomous calling." }
+        }
+        val extras = android.os.Bundle().apply {
+            putBoolean(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, payload.optBoolean("speakerphone", false))
+        }
+        telecom.placeCall(uri, extras)
+        return "Autonomer Telefonanruf über Android Telecom gestartet."
+    }
+
+    private fun executePhoneHangup(payload: JSONObject): String {
+        require(Build.VERSION.SDK_INT >= 28) { "Call termination requires Android 9+." }
+        require(checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
+            "ANSWER_PHONE_CALLS permission missing."
+        }
+        val telecom = getSystemService(TelecomManager::class.java)
+            ?: throw IllegalStateException("Telecom service unavailable.")
+        val ended = telecom.endCall()
+        require(ended) { "No eligible active call to terminate." }
+        return "Aktiven Telefonanruf beendet."
+    }
+
+'''
+          if 'private fun executePhoneCall(' not in text:
+              if method_anchor not in text:
+                  raise SystemExit('A7SEM_BLOCK: service method anchor missing')
+              text = text.replace(method_anchor, methods + method_anchor, 1)
+          service.write_text(text)
+
+          receiver = Path('app/src/main/java/io/piga/phonebridge/CallAutomationReceiver.kt')
+          receiver.write_text(r'''package io.piga.phonebridge
+
+import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.telecom.TelecomManager
+import android.telephony.TelephonyManager
+
+class CallAutomationReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != TelephonyManager.ACTION_PHONE_STATE_CHANGED) return
+        val prefs = context.getSharedPreferences("piga_bridge", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("paired", false)) return
+        if (!prefs.getBoolean("master_autonomy", false)) return
+        if (prefs.getBoolean("emergency_stop", false)) return
+        if (!prefs.getBoolean("auto_answer_calls", true)) return
+
+        val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return
+        if (state != TelephonyManager.EXTRA_STATE_RINGING) return
+        if (Build.VERSION.SDK_INT < 26) return
+        if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) return
+
+        val telecom = context.getSystemService(TelecomManager::class.java) ?: return
+        try {
+            @Suppress("DEPRECATION")
+            telecom.acceptRingingCall()
+            prefs.edit()
+                .putString("last_call_automation", "AUTO_ANSWERED")
+                .putLong("last_call_automation_ms", System.currentTimeMillis())
+                .apply()
+        } catch (e: Exception) {
+            prefs.edit()
+                .putString("last_call_automation", "AUTO_ANSWER_FAILED:${e.javaClass.simpleName}")
+                .apply()
+        }
+    }
+}
+''')
+
+          manifest = Path('app/src/main/AndroidManifest.xml')
+          m = manifest.read_text()
+          permission_anchor = '    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n'
+          permissions = '''    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+'''
+          if 'android.permission.CALL_PHONE' not in m:
+              if permission_anchor not in m:
+                  raise SystemExit('A7SEM_BLOCK: manifest permission anchor missing')
+              m = m.replace(permission_anchor, permission_anchor + permissions, 1)
+
+          receiver_anchor = '''        <receiver
+            android:name=".BootReceiver"
+'''
+          receiver_xml = '''        <receiver
+            android:name=".CallAutomationReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.PHONE_STATE" />
+            </intent-filter>
+        </receiver>
+
+'''
+          if '.CallAutomationReceiver' not in m:
+              if receiver_anchor not in m:
+                  raise SystemExit('A7SEM_BLOCK: manifest receiver anchor missing')
+              m = m.replace(receiver_anchor, receiver_xml + receiver_anchor, 1)
+          manifest.write_text(m)
+
+          main = Path('app/src/main/java/io/piga/phonebridge/MainActivity.kt')
+          ui = main.read_text()
+
+          if 'TELEPHONY_PERMISSION_REQUEST' not in ui:
+              ui = ui.replace('''    private lateinit var emergencyStopSwitch: Switch
+''', '''    private lateinit var emergencyStopSwitch: Switch
+''')
+
+          button_anchor = '''        content.addView(actionButton("Benachrichtigungen erlauben", secondaryColor) {
+            requestNotificationPermission()
+        }, fullWidth())
+'''
+          button = '''        content.addView(actionButton("Telefonie-Autonomie erlauben", secondaryColor) {
+            requestTelephonyPermissions()
+        }, fullWidth())
+'''
+          if 'Telefonie-Autonomie erlauben' not in ui:
+              if button_anchor not in ui:
+                  raise SystemExit('A7SEM_BLOCK: main UI button anchor missing')
+              ui = ui.replace(button_anchor, button_anchor + button, 1)
+
+          method_anchor_main = '''    private fun handleMasterAutonomy(enabled: Boolean) {
+'''
+          permission_method = r'''    private fun requestTelephonyPermissions() {
+        if (Build.VERSION.SDK_INT < 23) return
+        val required = arrayOf(
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.ANSWER_PHONE_CALLS,
+            Manifest.permission.READ_PHONE_STATE,
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (required.isEmpty()) {
+            prefs.edit().putBoolean("auto_answer_calls", true).apply()
+            toast("Telefonie-Autonomie ist freigegeben.")
+            refreshStatus()
+            return
+        }
+        requestPermissions(required.toTypedArray(), TELEPHONY_PERMISSION_REQUEST)
+    }
+
+'''
+          if 'private fun requestTelephonyPermissions()' not in ui:
+              if method_anchor_main not in ui:
+                  raise SystemExit('A7SEM_BLOCK: main method anchor missing')
+              ui = ui.replace(method_anchor_main, permission_method + method_anchor_main, 1)
+
+          result_old = '''        if (requestCode == NOTIFICATION_PERMISSION_REQUEST) refreshStatus()
+'''
+          result_new = '''        if (requestCode == NOTIFICATION_PERMISSION_REQUEST) refreshStatus()
+        if (requestCode == TELEPHONY_PERMISSION_REQUEST) {
+            val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            prefs.edit().putBoolean("auto_answer_calls", granted).apply()
+            toast(if (granted) "Telefonie-Autonomie ist freigegeben." else "Telefonie-Autonomie bleibt blockiert.")
+            refreshStatus()
+        }
+'''
+          if 'if (requestCode == TELEPHONY_PERMISSION_REQUEST)' not in ui:
+              if result_old not in ui:
+                  raise SystemExit('A7SEM_BLOCK: permission result anchor missing')
+              ui = ui.replace(result_old, result_new, 1)
+
+          companion_anchor = 'companion object {'
+          if companion_anchor in ui and 'TELEPHONY_PERMISSION_REQUEST = ' not in ui:
+              ui = ui.replace(companion_anchor, companion_anchor + '\n        private const val TELEPHONY_PERMISSION_REQUEST = 4202', 1)
+          elif companion_anchor not in ui:
+              # Add before final class brace if no companion object exists.
+              idx = ui.rfind('}')
+              ui = ui[:idx] + '''    companion object {
+        private const val TELEPHONY_PERMISSION_REQUEST = 4202
+    }
+''' + ui[idx:]
+          main.write_text(ui)
+
+      - name: A7SEM Reverse telephony checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F '"phone_call" to "pocket.phone.call"' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'Emergency numbers are never admitted for autonomous calling.' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'telecom.acceptRingingCall()' app/src/main/java/io/piga/phonebridge/CallAutomationReceiver.kt
+          grep -F 'android.permission.ANSWER_PHONE_CALLS' app/src/main/AndroidManifest.xml
+          grep -F 'Telefonie-Autonomie erlauben' app/src/main/java/io/piga/phonebridge/MainActivity.kt
+          git diff --check
+
+      - name: Commit autonomous telephony
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No telephony change required.'
+            exit 0
+          fi
+          git config user.name 'piga-a7sem-reverse'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/io/piga/phonebridge/BridgeService.kt app/src/main/java/io/piga/phonebridge/CallAutomationReceiver.kt app/src/main/java/io/piga/phonebridge/MainActivity.kt app/src/main/AndroidManifest.xml
+          git commit -m 'feat(android): add governed autonomous call place answer and hangup'
+          git push origin HEAD:main
