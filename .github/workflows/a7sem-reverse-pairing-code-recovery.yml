@@ -1,0 +1,92 @@
+name: A7SEM Reverse Pairing Code Recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/a7sem-reverse-pairing-code-recovery.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Restore dual-path pairing-code visibility
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('app/src/main/java/io/piga/phonebridge/PairingActivity.kt')
+          text = path.read_text()
+
+          old = '''                val pid = response.getString("pairingId")
+                val chal = response.getString("challenge")
+                require(pid.isNotBlank() && chal.isNotBlank()) { "Invalid challenge response." }
+'''
+          new = '''                val pid = response.getString("pairingId")
+                val chal = response.getString("challenge")
+                val serverPairingCode = response.optString("pairingCode").trim()
+                require(pid.isNotBlank() && chal.isNotBlank()) { "Invalid challenge response." }
+                require(serverPairingCode.isBlank() || serverPairingCode.matches(Regex("^\\\\d{6}$"))) {
+                    "Invalid pairing code in challenge response."
+                }
+'''
+          if old not in text:
+              raise SystemExit('A7SEM_REVERSE_BLOCK: challenge contract anchor not found')
+          text = text.replace(old, new, 1)
+
+          old_ui = '''                runOnUiThread {
+                    status.text = "2 von 3 · Freigabe bestätigen\\n\\nÖffne PIGA Pocket im Browser. Dort erscheint die Besitzer-Freigabe. PIGA führt dich anschließend automatisch zu dieser Bridge zurück."
+                    pairingCodeInput.isEnabled = true
+                    challengeButton.text = "Neue Kopplungsanfrage"
+                    challengeButton.isEnabled = true
+                    confirmButton.isEnabled = true
+                }
+'''
+          new_ui = '''                runOnUiThread {
+                    if (serverPairingCode.isNotBlank()) {
+                        pairingCodeInput.setText(serverPairingCode)
+                        status.text = "2 von 3 · Freigabecode wiederhergestellt\\n\\nCode: $serverPairingCode\\n\\nTippe auf „Sicher koppeln“."
+                    } else {
+                        status.text = "2 von 3 · Freigabe bestätigen\\n\\nÖffne PIGA Pocket im Browser. Dort erscheint die Besitzer-Freigabe. PIGA führt dich anschließend automatisch zu dieser Bridge zurück."
+                    }
+                    pairingCodeInput.isEnabled = true
+                    challengeButton.text = "Neue Kopplungsanfrage"
+                    challengeButton.isEnabled = true
+                    confirmButton.isEnabled = true
+                }
+'''
+          if old_ui not in text:
+              raise SystemExit('A7SEM_REVERSE_BLOCK: pairing UI anchor not found')
+          text = text.replace(old_ui, new_ui, 1)
+
+          path.write_text(text)
+
+      - name: A7SEM Reverse static verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'val serverPairingCode = response.optString("pairingCode").trim()' app/src/main/java/io/piga/phonebridge/PairingActivity.kt
+          grep -F 'Freigabecode wiederhergestellt' app/src/main/java/io/piga/phonebridge/PairingActivity.kt
+          git diff --check
+
+      - name: Commit recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No recovery change required.'
+            exit 0
+          fi
+          git config user.name 'piga-a7sem-reverse'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/io/piga/phonebridge/PairingActivity.kt
+          git commit -m 'fix(android): restore pairing code visibility with browser fallback'
+          git push origin HEAD:main
