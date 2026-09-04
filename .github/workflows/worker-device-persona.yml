@@ -1,0 +1,139 @@
+name: Worker Device Persona
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.piga-trigger/worker-device-persona.txt'
+      - '.github/workflows/worker-device-persona.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Bind worker lineage to Android execution
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('app/src/main/java/io/piga/phonebridge/BridgeService.kt')
+          text = path.read_text()
+
+          anchor = '''        val payload = command.optJSONObject("payload")
+
+        val allowed = mapOf(
+'''
+          replacement = '''        val payload = command.optJSONObject("payload")
+        val actorContext = command.optJSONObject("actorContext") ?: payload?.optJSONObject("workerContext")
+        val actorType = actorContext?.optString("actorType")?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        val workerId = actorContext?.optString("workerId")?.trim().orEmpty()
+        val ticketId = actorContext?.optString("ticketId")?.trim().orEmpty()
+        val managerId = actorContext?.optString("managerId")?.trim().orEmpty()
+        val actorCapability = actorContext?.optString("capabilityScope")?.trim().orEmpty()
+        val workerExecution = actorType == "worker" || workerId.isNotBlank()
+
+        val allowed = mapOf(
+'''
+          if 'val workerExecution = actorType == "worker" || workerId.isNotBlank()' not in text:
+              if anchor not in text:
+                  raise SystemExit('A7SEM_REVERSE_BLOCK: command payload anchor missing')
+              text = text.replace(anchor, replacement, 1)
+
+          schema_anchor = '''        if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
+            if (commandId.isNotBlank()) sendResult(root, deviceId, pairingId, commandId, "rejected", "Command schema or allowlist rejected.")
+            return
+        }
+
+'''
+          schema_replacement = '''        if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {
+            if (commandId.isNotBlank()) sendResult(root, deviceId, pairingId, commandId, "rejected", "Command schema or allowlist rejected.")
+            return
+        }
+        if (workerExecution) {
+            val idPattern = Regex("^[A-Za-z0-9._:-]{3,160}$")
+            if (
+                actorType != "worker" ||
+                !workerId.matches(idPattern) ||
+                !ticketId.matches(idPattern) ||
+                (managerId.isNotBlank() && !managerId.matches(idPattern)) ||
+                actorCapability != scope
+            ) {
+                sendResult(root, deviceId, pairingId, commandId, "rejected", "Worker Device Persona lineage or capability binding rejected.")
+                return
+            }
+        }
+
+'''
+          if 'Worker Device Persona lineage or capability binding rejected.' not in text:
+              if schema_anchor not in text:
+                  raise SystemExit('A7SEM_REVERSE_BLOCK: schema anchor missing')
+              text = text.replace(schema_anchor, schema_replacement, 1)
+
+          ack_anchor = '''        sendAck(root, deviceId, pairingId, commandId, "accepted")
+        require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {
+'''
+          ack_replacement = '''        sendAck(root, deviceId, pairingId, commandId, "accepted")
+        if (workerExecution) {
+            require(
+                prefs.edit()
+                    .putString("last_worker_id", workerId)
+                    .putString("last_worker_ticket_id", ticketId)
+                    .putString("last_worker_manager_id", managerId)
+                    .putString("last_worker_capability", scope)
+                    .putString("last_worker_command_id", commandId)
+                    .putLong("last_worker_execution_ms", System.currentTimeMillis())
+                    .commit()
+            ) { "Unable to persist Worker Device Persona lineage before execution." }
+        }
+        require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {
+'''
+          if 'last_worker_ticket_id' not in text:
+              if ack_anchor not in text:
+                  raise SystemExit('A7SEM_REVERSE_BLOCK: accepted ACK anchor missing')
+              text = text.replace(ack_anchor, ack_replacement, 1)
+
+          detail_anchor = '''                detail = detail,
+                createdAtMs = System.currentTimeMillis(),
+'''
+          detail_replacement = '''                detail = if (workerExecution) "$detail | worker=$workerId ticket=$ticketId manager=$managerId capability=$scope" else detail,
+                createdAtMs = System.currentTimeMillis(),
+'''
+          if 'worker=$workerId ticket=$ticketId' not in text:
+              if detail_anchor not in text:
+                  raise SystemExit('A7SEM_REVERSE_BLOCK: result detail anchor missing')
+              text = text.replace(detail_anchor, detail_replacement, 1)
+
+          path.write_text(text)
+
+      - name: A7SEM Reverse checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'val workerExecution = actorType == "worker" || workerId.isNotBlank()' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'Worker Device Persona lineage or capability binding rejected.' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'last_worker_ticket_id' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'worker=$workerId ticket=$ticketId' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          git diff --check
+
+      - name: Commit worker device contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Worker Device Persona already applied.'
+            exit 0
+          fi
+          git config user.name 'piga-worker-device'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          git commit -m 'feat(android): bind worker persona lineage to device execution'
+          git push origin HEAD:main
