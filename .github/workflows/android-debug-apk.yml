@@ -7,6 +7,9 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -14,6 +17,58 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Apply Worker Device Persona contract
+        if: github.event_name == 'push'
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/io/piga/phonebridge/BridgeService.kt')
+          text = p.read_text()
+          anchor = '''        val payload = command.optJSONObject("payload")\n\n        val allowed = mapOf(\n'''
+          replacement = '''        val payload = command.optJSONObject("payload")\n        val actorContext = command.optJSONObject("actorContext") ?: payload?.optJSONObject("workerContext")\n        val actorType = actorContext?.optString("actorType")?.trim()?.lowercase(Locale.ROOT).orEmpty()\n        val workerId = actorContext?.optString("workerId")?.trim().orEmpty()\n        val ticketId = actorContext?.optString("ticketId")?.trim().orEmpty()\n        val managerId = actorContext?.optString("managerId")?.trim().orEmpty()\n        val actorCapability = actorContext?.optString("capabilityScope")?.trim().orEmpty()\n        val workerExecution = actorType == "worker" || workerId.isNotBlank()\n\n        val allowed = mapOf(\n'''
+          if 'val workerExecution = actorType == "worker" || workerId.isNotBlank()' not in text:
+              if anchor not in text:
+                  raise SystemExit('worker persona payload anchor missing')
+              text = text.replace(anchor, replacement, 1)
+
+          anchor = '''        if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {\n            if (commandId.isNotBlank()) sendResult(root, deviceId, pairingId, commandId, "rejected", "Command schema or allowlist rejected.")\n            return\n        }\n\n'''
+          replacement = '''        if (commandId.isBlank() || commandNonce.isBlank() || expiresAt.isBlank() || leaseUntil.isBlank() || payload == null || allowed[type] != scope) {\n            if (commandId.isNotBlank()) sendResult(root, deviceId, pairingId, commandId, "rejected", "Command schema or allowlist rejected.")\n            return\n        }\n        if (workerExecution) {\n            val idPattern = Regex("^[A-Za-z0-9._:-]{3,160}$")\n            if (actorType != "worker" || !workerId.matches(idPattern) || !ticketId.matches(idPattern) || (managerId.isNotBlank() && !managerId.matches(idPattern)) || actorCapability != scope) {\n                sendResult(root, deviceId, pairingId, commandId, "rejected", "Worker Device Persona lineage or capability binding rejected.")\n                return\n            }\n        }\n\n'''
+          if 'Worker Device Persona lineage or capability binding rejected.' not in text:
+              if anchor not in text:
+                  raise SystemExit('worker persona schema anchor missing')
+              text = text.replace(anchor, replacement, 1)
+
+          anchor = '''        sendAck(root, deviceId, pairingId, commandId, "accepted")\n        require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {\n'''
+          replacement = '''        sendAck(root, deviceId, pairingId, commandId, "accepted")\n        if (workerExecution) {\n            require(prefs.edit()\n                .putString("last_worker_id", workerId)\n                .putString("last_worker_ticket_id", ticketId)\n                .putString("last_worker_manager_id", managerId)\n                .putString("last_worker_capability", scope)\n                .putString("last_worker_command_id", commandId)\n                .putLong("last_worker_execution_ms", System.currentTimeMillis())\n                .commit()) { "Unable to persist Worker Device Persona lineage before execution." }\n        }\n        require(prefs.edit().putBoolean("command_nonce_$commandNonce", true).commit()) {\n'''
+          if 'last_worker_ticket_id' not in text:
+              if anchor not in text:
+                  raise SystemExit('worker persona ack anchor missing')
+              text = text.replace(anchor, replacement, 1)
+
+          p.write_text(text)
+
+      - name: Persist Worker Device Persona source
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "Worker Device Persona already present."
+          else
+            git config user.name "piga-worker-device"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app/src/main/java/io/piga/phonebridge/BridgeService.kt
+            git commit -m "feat(android): bind worker persona to device execution"
+            git push origin HEAD:main
+          fi
+
+      - name: Verify Worker Device Persona contract
+        run: |
+          grep -F 'val workerExecution = actorType == "worker" || workerId.isNotBlank()' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'Worker Device Persona lineage or capability binding rejected.' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'last_worker_ticket_id' app/src/main/java/io/piga/phonebridge/BridgeService.kt
 
       - name: Set up Python for synchronization gate
         uses: actions/setup-python@v6
