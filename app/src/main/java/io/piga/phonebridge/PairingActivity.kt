@@ -29,10 +29,12 @@ import java.util.UUID
 class PairingActivity : Activity() {
     private val alias = "piga_phone_bridge_device_key"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
+    private val recoveryEndpoint = "https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-pairing-recovery-v1"
 
     private lateinit var status: TextView
     private lateinit var pairingCodeInput: EditText
     private lateinit var challengeButton: Button
+    private lateinit var recoveryButton: Button
     private lateinit var ownerButton: Button
     private lateinit var confirmButton: Button
     private var pairingId: String? = null
@@ -76,7 +78,7 @@ class PairingActivity : Activity() {
             text = when {
                 alreadyPaired -> "Dieses Handy ist bereits sicher mit PIGA gekoppelt."
                 pairingId != null && challenge != null -> "2 von 3 · Gerätefreigabe wartet auf Besitzerbestätigung."
-                else -> "1 von 3 · Gerät vorbereiten\n\nTippe auf „Dieses Handy verbinden“."
+                else -> "PIGA prüft zuerst automatisch, ob die frühere sichere Gerätekopplung wiederhergestellt werden kann."
             }
             setPadding(16, 16, 16, 24)
         }
@@ -95,8 +97,14 @@ class PairingActivity : Activity() {
             isEnabled = pairingId != null && challenge != null
         }
 
+        recoveryButton = Button(this).apply {
+            text = "Bestehende Kopplung wiederherstellen"
+            isAllCaps = false
+            setOnClickListener { recoverExistingPairing() }
+        }
+
         challengeButton = Button(this).apply {
-            text = if (alreadyPaired) "Neu koppeln" else "Dieses Handy verbinden"
+            text = if (alreadyPaired) "Neu koppeln" else "Neue Kopplung starten"
             isAllCaps = false
             setOnClickListener { requestChallenge() }
         }
@@ -137,6 +145,7 @@ class PairingActivity : Activity() {
             addView(subtitle, fullWidth())
             addView(status, fullWidth())
             addView(securityNote, fullWidth())
+            addView(recoveryButton, fullWidth())
             addView(pairingCodeInput, fullWidth())
             addView(challengeButton, fullWidth())
             addView(ownerButton, fullWidth())
@@ -151,12 +160,80 @@ class PairingActivity : Activity() {
         })
 
         handleIncomingIntent(intent)
+        if (!alreadyPaired && savedInstanceState == null) recoverExistingPairing()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIncomingIntent(intent)
+    }
+
+    private fun recoverExistingPairing() {
+        recoveryButton.isEnabled = false
+        challengeButton.isEnabled = false
+        pairingCodeInput.isEnabled = false
+        confirmButton.isEnabled = false
+        status.text = "Frühere sichere Gerätekopplung wird über den Android Keystore geprüft …"
+
+        Thread {
+            try {
+                val publicKey = getPublicKeyBase64()
+                val nonce = UUID.randomUUID().toString()
+                val canonical = "PAIR_RECOVER\n$nonce\n$publicKey"
+                val body = JSONObject()
+                    .put("publicKey", publicKey)
+                    .put("nonce", nonce)
+                    .put("signature", sign(canonical))
+                    .put("keyAlgorithm", "EC-P256-SHA256")
+                val response = postJson(recoveryEndpoint, body)
+                require(response.optString("status") == "RECOVER") { "Recovery not admitted." }
+                val recoveredDeviceId = response.getString("deviceId").trim()
+                val recoveredPairingId = response.getString("pairingId").trim()
+                val registryState = response.optString("registryState")
+                val emergencyStop = response.optBoolean("emergencyStop", true)
+                require(recoveredDeviceId.isNotBlank() && recoveredPairingId.isNotBlank()) { "Recovery binding incomplete." }
+                require(registryState == "active" && !emergencyStop) { "Recovery binding is not active." }
+
+                val root = ControlPlaneResolver.resolve(ControlPlaneResolver.CANONICAL_CONTROL_PLANE)
+                val autonomyEnabled = response.optBoolean("autonomyEnabled", false)
+                require(prefs.edit()
+                    .putString("device_id", recoveredDeviceId)
+                    .putString("pairing_id", recoveredPairingId)
+                    .putBoolean("paired", true)
+                    .putString("base_url", root)
+                    .putBoolean("emergency_stop", false)
+                    .putBoolean("master_autonomy", autonomyEnabled)
+                    .putString("autonomy_status", if (autonomyEnabled) "RECOVERED_ARMED" else "RECOVERED_DISARMED")
+                    .putString("runtime_status", "RECOVERED_PENDING_START")
+                    .remove("pending_pairing_id")
+                    .remove("pending_challenge")
+                    .commit()) { "Unable to persist recovered pairing." }
+
+                runOnUiThread {
+                    pairingId = recoveredPairingId
+                    challenge = null
+                    pairingCodeInput.setText("")
+                    pairingCodeInput.isEnabled = false
+                    confirmButton.isEnabled = false
+                    recoveryButton.isEnabled = true
+                    challengeButton.text = "Neu koppeln"
+                    challengeButton.isEnabled = true
+                    status.text = "Bestehende Kopplung sicher wiederhergestellt. Geräte-ID und Pairing-ID wurden aus dem Keystore-Nachweis übernommen."
+                    val service = Intent(this@PairingActivity, BridgeService::class.java)
+                    if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    status.text = when {
+                        e.message.orEmpty().contains("HTTP 404", ignoreCase = true) -> "Für diesen Android-Keystore wurde keine eindeutige frühere Kopplung gefunden. Neue Kopplung bleibt verfügbar."
+                        else -> "Die bestehende Kopplung konnte noch nicht verifiziert werden. Neue Kopplung bleibt verfügbar."
+                    }
+                    recoveryButton.isEnabled = true
+                    challengeButton.isEnabled = true
+                }
+            }
+        }.start()
     }
 
     private fun handleIncomingIntent(incoming: Intent?) {
