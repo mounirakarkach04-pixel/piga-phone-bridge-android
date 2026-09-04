@@ -71,7 +71,7 @@ jobs:
           grep -F 'last_worker_ticket_id' app/src/main/java/io/piga/phonebridge/BridgeService.kt
 
       - name: Set up Python for synchronization gate
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
