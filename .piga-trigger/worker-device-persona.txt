@@ -1,0 +1,4 @@
+PIGA Worker Device Persona trigger
+Issue: piga-pocket-enterprise#544
+Mode: A7SEM -> Gate 1 -> Gate 2 -> single-use command -> native effect -> signed result -> A7SEM Reverse
+Triggered: 2026-09-04
