@@ -19,6 +19,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -104,7 +105,7 @@ class PairingActivity : Activity() {
         }
 
         challengeButton = Button(this).apply {
-            text = if (alreadyPaired) "Neu koppeln" else "Neue Kopplung starten"
+            text = if (alreadyPaired) "Neu koppeln" else "Neue sichere Bindung anlegen"
             isAllCaps = false
             setOnClickListener { requestChallenge() }
         }
@@ -186,54 +187,91 @@ class PairingActivity : Activity() {
                     .put("nonce", nonce)
                     .put("signature", sign(canonical))
                     .put("keyAlgorithm", "EC-P256-SHA256")
-                val response = postJson(recoveryEndpoint, body)
-                require(response.optString("status") == "RECOVER") { "Recovery not admitted." }
-                val recoveredDeviceId = response.getString("deviceId").trim()
-                val recoveredPairingId = response.getString("pairingId").trim()
-                val registryState = response.optString("registryState")
-                val emergencyStop = response.optBoolean("emergencyStop", true)
-                require(recoveredDeviceId.isNotBlank() && recoveredPairingId.isNotBlank()) { "Recovery binding incomplete." }
-                require(registryState == "active" && !emergencyStop) { "Recovery binding is not active." }
+                val response = postJson(recoveryEndpoint, body, 5_000, 5_000)
+                when (response.optString("status")) {
+                    "RECOVER" -> {
+                        val recoveredDeviceId = response.getString("deviceId").trim()
+                        val recoveredPairingId = response.getString("pairingId").trim()
+                        val registryState = response.optString("registryState")
+                        val emergencyStop = response.optBoolean("emergencyStop", true)
+                        require(recoveredDeviceId.isNotBlank() && recoveredPairingId.isNotBlank()) { "RECOVERY_BINDING_INCOMPLETE" }
+                        require(registryState == "active" && !emergencyStop) { "RECOVERY_BINDING_NOT_ACTIVE" }
 
-                val root = ControlPlaneResolver.resolve(ControlPlaneResolver.CANONICAL_CONTROL_PLANE)
-                val autonomyEnabled = response.optBoolean("autonomyEnabled", false)
-                require(prefs.edit()
-                    .putString("device_id", recoveredDeviceId)
-                    .putString("pairing_id", recoveredPairingId)
-                    .putBoolean("paired", true)
-                    .putString("base_url", root)
-                    .putBoolean("emergency_stop", false)
-                    .putBoolean("master_autonomy", autonomyEnabled)
-                    .putString("autonomy_status", if (autonomyEnabled) "RECOVERED_ARMED" else "RECOVERED_DISARMED")
-                    .putString("runtime_status", "RECOVERED_PENDING_START")
-                    .remove("pending_pairing_id")
-                    .remove("pending_challenge")
-                    .commit()) { "Unable to persist recovered pairing." }
+                        val root = ControlPlaneResolver.resolve(ControlPlaneResolver.CANONICAL_CONTROL_PLANE)
+                        val autonomyEnabled = response.optBoolean("autonomyEnabled", false)
+                        require(prefs.edit()
+                            .putString("device_id", recoveredDeviceId)
+                            .putString("pairing_id", recoveredPairingId)
+                            .putBoolean("paired", true)
+                            .putString("base_url", root)
+                            .putBoolean("emergency_stop", false)
+                            .putBoolean("master_autonomy", autonomyEnabled)
+                            .putString("autonomy_status", if (autonomyEnabled) "RECOVERED_ARMED" else "RECOVERED_DISARMED")
+                            .putString("runtime_status", "RECOVERED_PENDING_START")
+                            .remove("pending_pairing_id")
+                            .remove("pending_challenge")
+                            .commit()) { "RECOVERY_PERSIST_FAILED" }
 
-                runOnUiThread {
-                    pairingId = recoveredPairingId
-                    challenge = null
-                    pairingCodeInput.setText("")
-                    pairingCodeInput.isEnabled = false
-                    confirmButton.isEnabled = false
-                    recoveryButton.isEnabled = true
-                    challengeButton.text = "Neu koppeln"
-                    challengeButton.isEnabled = true
-                    status.text = "Bestehende Kopplung sicher wiederhergestellt. Geräte-ID und Pairing-ID wurden aus dem Keystore-Nachweis übernommen."
-                    val service = Intent(this@PairingActivity, BridgeService::class.java)
-                    if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+                        runOnUiThread {
+                            pairingId = recoveredPairingId
+                            challenge = null
+                            pairingCodeInput.setText("")
+                            pairingCodeInput.isEnabled = false
+                            confirmButton.isEnabled = false
+                            recoveryButton.isEnabled = true
+                            challengeButton.text = "Neu koppeln"
+                            challengeButton.isEnabled = true
+                            status.text = "Bestehende Kopplung sicher wiederhergestellt. Der geschützte Gerätekanal wird gestartet."
+                            val service = Intent(this@PairingActivity, BridgeService::class.java)
+                            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+                        }
+                    }
+                    "PENDING_ADMIN_RECOVERY" -> {
+                        val pendingDevice = response.optString("deviceId")
+                        val pendingPairing = response.optString("pairingId")
+                        prefs.edit()
+                            .putString("pending_recovery_device_id", pendingDevice)
+                            .putString("pending_recovery_pairing_id", pendingPairing)
+                            .apply()
+                        runOnUiThread {
+                            status.text = "Keystore-Nachweis angenommen. Neue sichere Bindung wartet auf Besitzerfreigabe.\n\nRecovery: ${pendingPairing.take(8)}…"
+                            enableRecoveryActions()
+                            challengeButton.text = "Neue sichere Bindung anlegen"
+                        }
+                    }
+                    else -> throw IllegalStateException("RECOVERY_${response.optString("status", "UNKNOWN")}")
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    status.text = when {
-                        e.message.orEmpty().contains("HTTP 404", ignoreCase = true) -> "Für diesen Android-Keystore wurde keine eindeutige frühere Kopplung gefunden. Neue Kopplung bleibt verfügbar."
-                        else -> "Die bestehende Kopplung konnte noch nicht verifiziert werden. Neue Kopplung bleibt verfügbar."
-                    }
-                    recoveryButton.isEnabled = true
-                    challengeButton.isEnabled = true
+                    val code = diagnosticCode(e)
+                    status.text = "Recovery konnte nicht abgeschlossen werden. Neue sichere Bindung bleibt verfügbar.\n\nFehler: $code"
+                    enableRecoveryActions()
+                    challengeButton.text = "Neue sichere Bindung anlegen"
                 }
             }
         }.start()
+    }
+
+    private fun enableRecoveryActions() {
+        recoveryButton.isEnabled = true
+        challengeButton.isEnabled = true
+        pairingCodeInput.isEnabled = pairingId != null && challenge != null
+        confirmButton.isEnabled = pairingId != null && challenge != null
+    }
+
+    private fun diagnosticCode(error: Exception): String {
+        val raw = error.message.orEmpty()
+        return when {
+            error is SocketTimeoutException -> "RECOVERY_TIMEOUT"
+            raw.contains("HTTP 401", true) -> "RECOVERY_UNAUTHORIZED"
+            raw.contains("HTTP 403", true) -> "RECOVERY_FORBIDDEN"
+            raw.contains("HTTP 404", true) -> "RECOVERY_NOT_FOUND"
+            Regex("HTTP 5\\d\\d").containsMatchIn(raw) -> "RECOVERY_SERVER_UNAVAILABLE"
+            raw.contains("Unable to resolve host", true) -> "RECOVERY_DNS"
+            raw.contains("Network is unreachable", true) -> "RECOVERY_NETWORK"
+            raw.startsWith("RECOVERY_") -> raw.take(80)
+            else -> "RECOVERY_CLIENT_${error.javaClass.simpleName.uppercase()}"
+        }
     }
 
     private fun handleIncomingIntent(incoming: Intent?) {
@@ -355,7 +393,7 @@ class PairingActivity : Activity() {
                     .put("deviceId", ensureDeviceId())
                     .put("publicKey", getPublicKeyBase64())
                     .put("keyAlgorithm", "EC-P256-SHA256")
-                val response = postJson("$root/api/bridge/pairing/challenge", body)
+                val response = postJson("$root/api/bridge/pairing/challenge", body, 8_000, 8_000)
                 val pid = response.getString("pairingId")
                 val chal = response.getString("challenge")
                 require(pid.isNotBlank() && chal.isNotBlank()) { "Invalid challenge response." }
@@ -378,9 +416,10 @@ class PairingActivity : Activity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    status.text = friendlyError(e)
+                    status.text = "Neue Bindung konnte nicht gestartet werden.\n\nFehler: ${diagnosticCode(e)}"
                     challengeButton.text = "Erneut versuchen"
                     challengeButton.isEnabled = true
+                    recoveryButton.isEnabled = true
                     pairingCodeInput.isEnabled = false
                     confirmButton.isEnabled = false
                 }
@@ -417,7 +456,7 @@ class PairingActivity : Activity() {
                     .put("pairingId", pid)
                     .put("pairingCode", code)
                     .put("signature", signature)
-                val response = postJson("$root/api/bridge/pairing/confirm", body)
+                val response = postJson("$root/api/bridge/pairing/confirm", body, 8_000, 8_000)
                 val confirmedPairingId = response.optString("pairingId", pid)
                 require(confirmedPairingId == pid) { "Pairing confirmation returned unexpected pairingId." }
                 require(prefs.edit()
@@ -440,9 +479,10 @@ class PairingActivity : Activity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    status.text = friendlyError(e)
+                    status.text = "Kopplungsbestätigung fehlgeschlagen.\n\nFehler: ${diagnosticCode(e)}"
                     challengeButton.isEnabled = true
                     confirmButton.isEnabled = true
+                    recoveryButton.isEnabled = true
                 }
             }
         }.start()
@@ -455,17 +495,6 @@ class PairingActivity : Activity() {
         signer.initSign(entry.privateKey)
         signer.update(payload.toByteArray(Charsets.UTF_8))
         return Base64.encodeToString(signer.sign(), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
-    }
-
-    private fun friendlyError(error: Exception): String {
-        val raw = error.message.orEmpty()
-        return when {
-            raw.contains("API_ORIGIN_NOT_ADMITTED", ignoreCase = true) -> "PIGA ist erreichbar, aber der sichere API-Dienst ist momentan noch nicht freigegeben."
-            raw.contains("HTTP 401", ignoreCase = true) || raw.contains("HTTP 403", ignoreCase = true) -> "Die Gerätefreigabe wurde nicht autorisiert. Öffne PIGA Pocket im Browser, melde dich an und bestätige die Freigabe."
-            Regex("HTTP 5\\d\\d", RegexOption.IGNORE_CASE).containsMatchIn(raw) -> "Der sichere PIGA-Dienst ist momentan nicht verfügbar. Bitte erneut versuchen."
-            raw.contains("timed out", ignoreCase = true) || raw.contains("timeout", ignoreCase = true) -> "Die Verbindung hat zu lange gedauert. Bitte Internetverbindung prüfen und erneut versuchen."
-            else -> "Die sichere Verbindung konnte nicht abgeschlossen werden. Bitte erneut versuchen."
-        }
     }
 
     private fun ensureDeviceId(): String {
@@ -494,22 +523,29 @@ class PairingActivity : Activity() {
         return Base64.encodeToString(ks.getCertificate(alias).publicKey.encoded, Base64.NO_WRAP)
     }
 
-    private fun postJson(url: String, body: JSONObject): JSONObject {
+    private fun postJson(url: String, body: JSONObject, connectMs: Int, readMs: Int): JSONObject {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 15_000
-            readTimeout = 15_000
+            connectTimeout = connectMs
+            readTimeout = readMs
             doOutput = true
+            useCaches = false
+            instanceFollowRedirects = false
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("Connection", "close")
+            setRequestProperty("X-PIGA-Android-Recovery", "build-248")
         }
-        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-        val code = connection.responseCode
-        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
-        connection.disconnect()
-        if (code !in 200..299) throw IllegalStateException("HTTP $code ${text.take(240)}")
-        return if (text.isBlank()) JSONObject() else JSONObject(text)
+        try {
+            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code !in 200..299) throw IllegalStateException("HTTP $code ${text.take(240)}")
+            return if (text.isBlank()) JSONObject() else JSONObject(text)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun fullWidth() = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
