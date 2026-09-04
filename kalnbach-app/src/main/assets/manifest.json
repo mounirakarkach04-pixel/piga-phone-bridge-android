@@ -1,7 +1,7 @@
 {
   "name": "Kalnbach Operations",
   "short_name": "Kalnbach",
-  "description": "Kalnbach Operations FIELDTEST – Einsatzplanung, Zeiterfassung und Betriebsorganisation für J. Kalnbach Gebäudereinigung.",
+  "description": "Kalnbach Operations – Einsatzplanung, Zeiterfassung und Betriebsorganisation für J. Kalnbach Gebäudereinigung.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
