@@ -68,7 +68,7 @@ jobs:
           PY
       - name: Upload evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: piga-pairing-response-schema-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence/
