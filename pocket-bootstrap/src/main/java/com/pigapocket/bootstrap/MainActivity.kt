@@ -6,12 +6,16 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.PermissionRequest
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import java.io.ByteArrayInputStream
@@ -22,11 +26,13 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "PigaPocketShell"
         private const val APP_HOST = "app.pigapocket.com"
+        private const val CLERK_HOST = "clerk.app.pigapocket.com"
         private const val APP_ORIGIN = "https://app.pigapocket.com"
         private const val CANONICAL_CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsuYXBwLnBpZ2Fwb2NrZXQuY29tJA"
         private const val EMPTY_CLERK_MARKER = "const E='',A=void 0"
         private const val PATCHED_CLERK_MARKER = "const E='$CANONICAL_CLERK_PUBLISHABLE_KEY',A=void 0"
         private val EXPO_WEB_BUNDLE = Regex("^/_expo/static/js/web/index-[A-Za-z0-9_-]+\\.js$")
+        private val TRUSTED_AUTH_HOSTS = setOf(APP_HOST, CLERK_HOST)
     }
 
     private lateinit var webView: WebView
@@ -35,20 +41,37 @@ class MainActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        createWebView()
+        handleIntent(intent)
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun createWebView() {
         webView = WebView(this)
         setContentView(webView)
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
+        webView.settings.databaseEnabled = true
         webView.settings.mediaPlaybackRequiresUserGesture = false
         webView.settings.allowFileAccess = false
         webView.settings.allowContentAccess = false
-        // The preceding field-test shell may have cached the broken bundle. Clear only
-        // HTTP/WebView cache; Clerk/local storage remains governed by the web runtime.
-        webView.clearCache(true)
+        webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+
+        // Clerk uses WebView-owned cookies/storage. Preserve those across app launches and
+        // allow its first-party auth host inside the same WebView instead of bouncing the
+        // user into an external browser with a different cookie jar.
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                setAcceptThirdPartyCookies(webView, true)
+            }
+        }
+
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val uri = request.url
-                return if (uri.scheme == "https" && uri.host == APP_HOST) {
+                val trustedHttps = uri.scheme == "https" && uri.host in TRUSTED_AUTH_HOSTS
+                return if (trustedHttps) {
                     false
                 } else {
                     runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri)) }
@@ -65,6 +88,14 @@ class MainActivity : Activity() {
                         EXPO_WEB_BUNDLE.matches(uri.path ?: "")
                 if (!isCanonicalExpoBundle) return super.shouldInterceptRequest(view, request)
                 return interceptCanonicalRuntimeBundle(uri)
+            }
+
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                Log.e(TAG, "WebView renderer exited; didCrash=${detail.didCrash()}")
+                runCatching { view.destroy() }
+                createWebView()
+                webView.loadUrl(APP_ORIGIN)
+                return true
             }
         }
         webView.webChromeClient = object : WebChromeClient() {
@@ -83,7 +114,6 @@ class MainActivity : Activity() {
                 }
             }
         }
-        handleIntent(intent)
     }
 
     private fun interceptCanonicalRuntimeBundle(uri: Uri): WebResourceResponse {
@@ -91,12 +121,11 @@ class MainActivity : Activity() {
         return try {
             connection = (URL(uri.toString()).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 15_000
-                readTimeout = 25_000
+                connectTimeout = 8_000
+                readTimeout = 12_000
                 instanceFollowRedirects = false
                 setRequestProperty("Accept", "application/javascript,text/javascript,*/*;q=0.8")
                 setRequestProperty("Accept-Encoding", "identity")
-                setRequestProperty("Cache-Control", "no-cache")
             }
             val status = connection.responseCode
             if (status !in 200..299) {
@@ -110,10 +139,7 @@ class MainActivity : Activity() {
                 } else {
                     val source = bytes.toString(Charsets.UTF_8)
                     when {
-                        source.contains(CANONICAL_CLERK_PUBLISHABLE_KEY) -> {
-                            // Production has healed. Pass the canonical bundle through unchanged.
-                            javascriptResponse(source)
-                        }
+                        source.contains(CANONICAL_CLERK_PUBLISHABLE_KEY) -> javascriptResponse(source)
                         source.indexOf(EMPTY_CLERK_MARKER) < 0 -> {
                             Log.e(TAG, "Clerk recovery marker is absent; refusing broad runtime mutation")
                             blockedRuntimeResponse("exact_clerk_marker_absent")
@@ -188,6 +214,11 @@ class MainActivity : Activity() {
             APP_ORIGIN
         }
         webView.loadUrl(target)
+    }
+
+    override fun onPause() {
+        CookieManager.getInstance().flush()
+        super.onPause()
     }
 
     @Deprecated("Deprecated in Java")
