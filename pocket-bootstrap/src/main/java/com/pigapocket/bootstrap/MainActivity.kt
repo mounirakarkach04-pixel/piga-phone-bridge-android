@@ -55,7 +55,6 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
             isClickable = true
             isLongClickable = true
-            descendantFocusability = View.FOCUS_AFTER_DESCENDANTS
         }
         setContentView(webView)
         webView.requestFocus(View.FOCUS_DOWN)
