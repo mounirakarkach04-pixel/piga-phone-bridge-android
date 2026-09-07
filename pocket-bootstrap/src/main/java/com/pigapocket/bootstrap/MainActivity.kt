@@ -9,6 +9,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
@@ -41,14 +43,22 @@ class MainActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         createWebView()
         handleIntent(intent)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView() {
-        webView = WebView(this)
+        webView = WebView(this).apply {
+            isFocusable = true
+            isFocusableInTouchMode = true
+            isClickable = true
+            isLongClickable = true
+        }
         setContentView(webView)
+        webView.requestFocus(View.FOCUS_DOWN)
+
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.settings.databaseEnabled = true
@@ -57,9 +67,6 @@ class MainActivity : Activity() {
         webView.settings.allowContentAccess = false
         webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
 
-        // Clerk uses WebView-owned cookies/storage. Preserve those across app launches and
-        // allow its first-party auth host inside the same WebView instead of bouncing the
-        // user into an external browser with a different cookie jar.
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -77,6 +84,13 @@ class MainActivity : Activity() {
                     runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri)) }
                     true
                 }
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                super.onPageFinished(view, url)
+                view.isFocusable = true
+                view.isFocusableInTouchMode = true
+                view.requestFocus(View.FOCUS_DOWN)
             }
 
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
@@ -216,8 +230,19 @@ class MainActivity : Activity() {
         webView.loadUrl(target)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::webView.isInitialized) {
+            webView.onResume()
+            webView.isFocusable = true
+            webView.isFocusableInTouchMode = true
+            webView.requestFocus(View.FOCUS_DOWN)
+        }
+    }
+
     override fun onPause() {
         CookieManager.getInstance().flush()
+        if (::webView.isInitialized) webView.onPause()
         super.onPause()
     }
 
