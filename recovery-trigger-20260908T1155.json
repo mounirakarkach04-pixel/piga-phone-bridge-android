@@ -1,0 +1,9 @@
+{
+  "schema": "piga.phone-bridge.public-recovery-build.v1",
+  "purpose": "Trigger exactly one public GitHub Actions Android debug APK build for recovery evidence.",
+  "publicationAuthorized": false,
+  "pairingReset": false,
+  "keystoreReset": false,
+  "existingPocketAppModified": false,
+  "oneAuthorizationOneAttempt": true
+}
