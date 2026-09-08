@@ -30,13 +30,15 @@ class LocalDiagnosticsActivity : Activity() {
             textSize = 17f
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(24, 24, 24, 24)
-            text = "PIGA Local Capability Diagnostics\nFail-closed safe adapter checks"
+            text = localRecoveryState()
         }
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 48, 32, 48)
             addView(status, fullWidth())
+            addView(testButton("Recovery-Status aktualisieren") { setStatus(localRecoveryState()) }, fullWidth())
+            addView(testButton("Bestehenden Runtime-Kanal neu starten") { requestExistingRuntimeRecovery() }, fullWidth())
             addView(testButton("1. Clipboard write") { testClipboard() }, fullWidth())
             addView(testButton("2. Open safe URL") { testUrl() }, fullWidth())
             addView(testButton("3. Text-to-Speech") { testTts() }, fullWidth())
@@ -46,6 +48,50 @@ class LocalDiagnosticsActivity : Activity() {
         }
 
         setContentView(ScrollView(this).apply { addView(content) })
+    }
+
+    private fun localRecoveryState(): String {
+        val paired = prefs.getBoolean("paired", false)
+        val pairingId = prefs.getString("pairing_id", null)?.trim().orEmpty()
+        val deviceId = prefs.getString("device_id", null)?.trim().orEmpty()
+        val master = prefs.getBoolean("master_autonomy", false)
+        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        val runtime = prefs.getString("runtime_status", "UNKNOWN").orEmpty()
+        val recovery = prefs.getString("recovery_status", "UNKNOWN").orEmpty()
+        val lastPoll = prefs.getLong("last_poll_ms", 0L)
+        return buildString {
+            append("PIGA Local Recovery Diagnostics\n")
+            append("Fail-closed · existing identity only\n\n")
+            append("paired=").append(paired).append('\n')
+            append("pairingId=").append(if (pairingId.isBlank()) "MISSING" else pairingId.take(8) + "…").append('\n')
+            append("deviceId=").append(if (deviceId.isBlank()) "MISSING" else deviceId).append('\n')
+            append("masterAutonomy=").append(master).append('\n')
+            append("emergencyStop=").append(emergencyStop).append('\n')
+            append("runtimeStatus=").append(runtime.take(120)).append('\n')
+            append("recoveryStatus=").append(recovery.take(120)).append('\n')
+            append("lastPollMs=").append(lastPoll)
+        }
+    }
+
+    private fun requestExistingRuntimeRecovery() {
+        val paired = prefs.getBoolean("paired", false)
+        val pairingId = prefs.getString("pairing_id", null)?.trim().orEmpty()
+        val master = prefs.getBoolean("master_autonomy", false)
+        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        if (!paired || pairingId.isBlank()) {
+            setStatus(localRecoveryState() + "\n\nBLOCKED: keine lokale bestehende Pairing-Bindung vorhanden. Kein Neu-Pairing ausgeführt.")
+            return
+        }
+        if (!master || emergencyStop) {
+            setStatus(localRecoveryState() + "\n\nBLOCKED: Safety-Gate geschlossen. Kein Runtime-Restart ausgeführt.")
+            return
+        }
+        BridgeRecoveryScheduler.requestRecovery(this)
+        prefs.edit()
+            .putString("recovery_status", "MANUAL_EXISTING_RUNTIME_RECOVERY_REQUESTED")
+            .putLong("last_recovery_ms", System.currentTimeMillis())
+            .apply()
+        setStatus(localRecoveryState() + "\n\nBestehender Runtime-Recovery-Worker angefordert. Pairing/Keystore unverändert.")
     }
 
     private fun fullWidth() = LinearLayout.LayoutParams(
@@ -202,6 +248,6 @@ class LocalDiagnosticsActivity : Activity() {
     }
 
     private fun setStatus(message: String) {
-        runOnUiThread { status.text = "PIGA Local Capability Diagnostics\n\n$message" }
+        runOnUiThread { status.text = message }
     }
 }
