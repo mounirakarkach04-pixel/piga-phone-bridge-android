@@ -1,0 +1,84 @@
+name: Control Plane Device Discovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/control-plane-device-discovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Obtain governed OIDC token
+        id: oidc
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUDIENCE="piga-pocket-enterprise"
+          RESPONSE="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")"
+          TOKEN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"$RESPONSE")"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Read-only device discovery
+        env:
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          ROOT: https://app.pigapocket.com
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess
+          root=os.environ['ROOT'].rstrip('/')
+          token=os.environ['OIDC_TOKEN']
+          paths=['/api/bridge/devices','/api/bridge/admin/devices','/api/devices']
+          found=[]
+          for path in paths:
+              cmd=['curl','--silent','--show-error','--location','--max-time','25',root+path,
+                   '-H','Accept: application/json','-H','Authorization: Bearer '+token,
+                   '-w','\n__STATUS__:%{http_code}']
+              p=subprocess.run(cmd,text=True,capture_output=True)
+              out=p.stdout
+              raw,code=(out.rsplit('\n__STATUS__:',1) if '\n__STATUS__:' in out else (out,'000'))
+              print(f'{path} -> HTTP {code}')
+              if code != '200':
+                  continue
+              try: data=json.loads(raw)
+              except Exception:
+                  print('JSON_PARSE_FAILED')
+                  continue
+              candidates=[]
+              if isinstance(data,list): candidates=data
+              elif isinstance(data,dict):
+                  for key in ('devices','items','data'):
+                      if isinstance(data.get(key),list):
+                          candidates=data[key]
+                          break
+                  if not candidates and any(k in data for k in ('deviceId','id')):
+                      candidates=[data]
+              for item in candidates:
+                  if not isinstance(item,dict): continue
+                  did=item.get('deviceId') or item.get('id')
+                  if not isinstance(did,str) or not did.strip(): continue
+                  status=str(item.get('status') or item.get('state') or '')
+                  revoked=item.get('revoked') is True or status.lower() in {'revoked','deleted'}
+                  print('DEVICE', did.strip(), 'STATUS', status or 'UNKNOWN', 'REVOKED', revoked)
+                  found.append((did.strip(),status,revoked))
+              if found:
+                  break
+          print('DISCOVERY_COUNT', len(found))
+          targets={'f4c9ca22-7f70-4338-85fb-d7f567362254','6c9e4724-bf65-42e7-8586-48cc6eb0f3a1'}
+          for did,status,revoked in found:
+              if did in targets:
+                  print('TARGET_MATCH', did, 'STATUS', status or 'UNKNOWN', 'REVOKED', revoked)
+          PY
