@@ -4,4 +4,5 @@
     <string name="diagnostics_title">PIGA Bridge Diagnostics</string>
     <string name="runtime_channel_name">PIGA Governed Runtime</string>
     <string name="commands_channel_name">PIGA Local Commands</string>
+    <string name="device_admin_description">Ermöglicht PIGA Managed Installation nur nach expliziter Android Device-Owner-Provisionierung. Ohne verifizierten Device Owner bleibt Silent Install blockiert.</string>
 </resources>
