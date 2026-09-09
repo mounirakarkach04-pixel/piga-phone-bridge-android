@@ -100,7 +100,8 @@ def main() -> int:
 
     assert "id-token: write" in wake
     assert 'AUDIENCE="piga-pocket-enterprise"' in wake
-    assert 'test "$ROOT" = "https://app.pigapocket.com"' in wake
+    assert 'test "$CONTROL" = "https://app.pigapocket.com"' in wake
+    assert 'test "$ROOT" = "https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-governance-wake-adapter"' in wake
     assert '"$ROOT/api/health"' in wake
     assert "piga.control-plane-health.v1" in wake
     assert "payload.get('authority') == 'none'" in wake
