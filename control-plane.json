@@ -1,7 +1,8 @@
 {
   "schema": "piga.control-plane-discovery.v1",
-  "epoch": 3,
+  "epoch": 4,
   "controlPlaneUrl": "https://app.pigapocket.com",
+  "governanceWakeUrl": "https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-governance-wake-adapter",
   "governance": {
     "mode": "fail-closed",
     "authority": "repository-controlled-canonical-pointer",
