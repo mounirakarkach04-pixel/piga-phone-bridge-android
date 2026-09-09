@@ -14,7 +14,7 @@
     "repository": "mounirakarkach04-pixel/piga-phone-bridge-android",
     "applicationId": "com.pigapocket.bridge",
     "minimumCompatibleVersionCode": 21,
-    "minimumCompatibleVersionName": "1.0.3",
+    "minimumCompatibleVersionName": "1.0.4",
     "verifier": "io.piga.phonebridge.OrchestrationPlanVerifier",
     "receiptContract": "io.piga.phonebridge.CommandReceiptContract"
   },
