@@ -11,8 +11,8 @@ android {
         applicationId = "com.pigapocket.bridge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "1.0.5"
+        versionCode = 23
+        versionName = "1.0.6"
 
         vectorDrawables {
             useSupportLibrary = false

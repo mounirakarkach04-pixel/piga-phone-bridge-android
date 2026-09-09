@@ -190,7 +190,8 @@ class PairingActivity : Activity() {
                     .put("signature", sign(canonical))
                     .put("keyAlgorithm", "EC-P256-SHA256")
                 val hasLocalBinding = !prefs.getString("pairing_id", null)?.trim().isNullOrBlank() && !prefs.getString("device_id", null)?.trim().isNullOrBlank()
-                val response = if (hasLocalBinding) {
+                val hasLocalDevice = !prefs.getString("device_id", null)?.trim().isNullOrBlank()
+                val response = if (hasLocalBinding || hasLocalDevice) {
                     try {
                         recoverViaFailoverPresence(IllegalStateException("PRIMARY_BYPASSED_EXISTING_LOCAL_BINDING"))
                     } catch (failover: Exception) {
@@ -317,7 +318,7 @@ class PairingActivity : Activity() {
     private fun recoverViaFailoverPresence(primaryError: Exception): JSONObject {
         val localPairingId = prefs.getString("pairing_id", null)?.trim().orEmpty()
         val localDeviceId = prefs.getString("device_id", null)?.trim().orEmpty()
-        require(localPairingId.isNotBlank() && localDeviceId.isNotBlank()) { "RECOVERY_LOCAL_BINDING_MISSING" }
+        require(localDeviceId.isNotBlank()) { "RECOVERY_LOCAL_DEVICE_MISSING" }
         val timestamp = System.currentTimeMillis().toString()
         val counter = (prefs.getLong("failover_presence_counter", 0L) + 1L).toString()
         val requestId = UUID.randomUUID().toString()
@@ -349,15 +350,23 @@ class PairingActivity : Activity() {
             .putBoolean("paired", true)
             .putLong("failover_presence_ms", System.currentTimeMillis())
             .apply()
-        return JSONObject()
-            .put("status", "RECOVER")
-            .put("deviceId", localDeviceId)
-            .put("pairingId", localPairingId)
-            .put("registryState", "active")
-            .put("emergencyStop", false)
-            .put("autonomyEnabled", prefs.getBoolean("master_autonomy", false))
-            .put("recoveryAuthority", "signed-presence-only")
-            .put("primaryError", diagnosticCode(primaryError))
+        return if (localPairingId.isNotBlank()) {
+            JSONObject()
+                .put("status", "RECOVER")
+                .put("deviceId", localDeviceId)
+                .put("pairingId", localPairingId)
+                .put("registryState", "active")
+                .put("emergencyStop", false)
+                .put("autonomyEnabled", prefs.getBoolean("master_autonomy", false))
+                .put("recoveryAuthority", "signed-presence-only")
+                .put("primaryError", diagnosticCode(primaryError))
+        } else {
+            JSONObject()
+                .put("status", "RECOVER_PRESENCE_ONLY")
+                .put("deviceId", localDeviceId)
+                .put("recoveryAuthority", "signed-presence-only")
+                .put("primaryError", diagnosticCode(primaryError))
+        }
     }
 
     private fun enableRecoveryActions() {
