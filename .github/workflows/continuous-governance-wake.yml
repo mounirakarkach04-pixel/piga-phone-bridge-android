@@ -26,15 +26,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: Resolve canonical control plane
+      - name: Resolve canonical control plane and governed wake adapter
         id: control
         shell: bash
         run: |
           set -euo pipefail
           MANIFEST="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/control-plane.json"
           JSON="$(curl --fail --silent --show-error --location --max-time 15 "$MANIFEST")"
-          ROOT="$(python -c 'import json,sys; print(json.load(sys.stdin)["controlPlaneUrl"].rstrip("/"))' <<<"$JSON")"
-          test "$ROOT" = "https://app.pigapocket.com"
+          CONTROL="$(python -c 'import json,sys; print(json.load(sys.stdin)["controlPlaneUrl"].rstrip("/"))' <<<"$JSON")"
+          ROOT="$(python -c 'import json,sys; print(json.load(sys.stdin)["governanceWakeUrl"].rstrip("/"))' <<<"$JSON")"
+          test "$CONTROL" = "https://app.pigapocket.com"
+          test "$ROOT" = "https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-governance-wake-adapter"
+          echo "control=$CONTROL" >> "$GITHUB_OUTPUT"
           echo "root=$ROOT" >> "$GITHUB_OUTPUT"
 
       - name: Probe admitted control-plane health
@@ -141,7 +144,8 @@ jobs:
         run: |
           {
             echo '### PIGA Continuous Governance Wake'
-            echo "- Control plane: ${{ steps.control.outputs.root }}"
+            echo "- Canonical control plane: ${{ steps.control.outputs.control }}"
+            echo "- Governance wake adapter: ${{ steps.control.outputs.root }}"
             echo "- Probe: ${{ steps.probe.outputs.reason }}"
             echo "- Cycles: ${{ steps.drive.outputs.cycles || '0' }}"
             echo "- More ready: ${{ steps.drive.outputs.more || 'false' }}"
