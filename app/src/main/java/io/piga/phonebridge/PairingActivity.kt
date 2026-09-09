@@ -188,10 +188,19 @@ class PairingActivity : Activity() {
                     .put("nonce", nonce)
                     .put("signature", sign(canonical))
                     .put("keyAlgorithm", "EC-P256-SHA256")
-                val response = try {
-                    postJson(recoveryEndpoint, body, 5_000, 5_000)
-                } catch (primary: Exception) {
-                    recoverViaFailoverPresence(primary)
+                val hasLocalBinding = !prefs.getString("pairing_id", null)?.trim().isNullOrBlank() && !prefs.getString("device_id", null)?.trim().isNullOrBlank()
+                val response = if (hasLocalBinding) {
+                    try {
+                        recoverViaFailoverPresence(IllegalStateException("PRIMARY_BYPASSED_EXISTING_LOCAL_BINDING"))
+                    } catch (failover: Exception) {
+                        postJson(recoveryEndpoint, body, 5_000, 5_000)
+                    }
+                } else {
+                    try {
+                        postJson(recoveryEndpoint, body, 5_000, 5_000)
+                    } catch (primary: Exception) {
+                        recoverViaFailoverPresence(primary)
+                    }
                 }
                 when (response.optString("status")) {
                     "RECOVER" -> {
