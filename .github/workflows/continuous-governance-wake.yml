@@ -99,6 +99,8 @@ jobs:
           cycles=0
           max_cycles=50
           last='{}'
+          reason=''
+          detail=''
           while [ "$more" = "true" ] && [ "$cycles" -lt "$max_cycles" ]; do
             cycles=$((cycles + 1))
             trigger_id="${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${cycles}"
@@ -114,7 +116,9 @@ jobs:
               --data '{"reason":"continuous-governance-wake","engineCount":5,"createAdditionalEngine":false}')"
             more="$(python -c 'import json,sys; print(str(bool(json.load(sys.stdin).get("moreReady", False))).lower())' <<<"$last")"
             status="$(python -c 'import json,sys; print(json.load(sys.stdin).get("status","UNKNOWN"))' <<<"$last")"
-            echo "cycle=$cycles status=$status moreReady=$more"
+            reason="$(python -c 'import json,sys; print(json.load(sys.stdin).get("reason","") or "")' <<<"$last")"
+            detail="$(python -c 'import json,sys; print(json.load(sys.stdin).get("detail","") or "")' <<<"$last")"
+            echo "cycle=$cycles status=$status moreReady=$more reason=$reason detail=$detail"
             case "$status" in
               PASS|ALLOW|READY|RUNNING|IDLE|HEARTBEAT|DELAY|WAITING|CIRCUIT_OPEN|BLOCK|BLOCKED|UNKNOWN|EXPIRED) ;;
               *) echo "Unexpected trigger status; fail closed" >&2; exit 1;;
@@ -123,6 +127,8 @@ jobs:
           done
           echo "cycles=$cycles" >> "$GITHUB_OUTPUT"
           echo "more=$more" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "detail=$detail" >> "$GITHUB_OUTPUT"
 
       - name: Immediate continuation dispatch
         if: steps.probe.outputs.ready == 'true' && steps.drive.outputs.more == 'true'
@@ -149,6 +155,8 @@ jobs:
             echo "- Probe: ${{ steps.probe.outputs.reason }}"
             echo "- Cycles: ${{ steps.drive.outputs.cycles || '0' }}"
             echo "- More ready: ${{ steps.drive.outputs.more || 'false' }}"
+            echo "- Last reason: ${{ steps.drive.outputs.reason || '' }}"
+            echo "- Last detail: ${{ steps.drive.outputs.detail || '' }}"
             echo '- Engine count: 5'
             echo '- Additional engine created: false'
             echo '- A7SEM Reverse is engine: false'
