@@ -28,6 +28,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class BridgeService : Service() {
     private val running = AtomicBoolean(false)
     private val alias = "piga_phone_bridge_device_key"
+    private val failoverEndpoints = listOf("https://failover.pigapocket.com", "https://piga-failover-live-production.up.railway.app")
+    private val failoverControlPlaneOrigin = "https://app.pigapocket.com"
+    private val failoverContractVersion = "0.2.0"
+    private val failoverContractVersionCode = "19"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private val ttsLock = Object()
     @Volatile private var ttsEngine: TextToSpeech? = null
@@ -73,6 +77,7 @@ class BridgeService : Service() {
                 val pairingId = prefs.getString("pairing_id", null)
                     ?: throw IllegalStateException("Missing pairing id")
 
+                tryFailoverPresence(deviceId)
                 syncSafety(root, deviceId, pairingId)
                 retryPendingResults(root, deviceId, pairingId)
 
@@ -101,6 +106,53 @@ class BridgeService : Service() {
                 running.set(false)
             }
         }
+    }
+
+    private fun tryFailoverPresence(deviceId: String) {
+        var lastError = "unavailable"
+        for (endpoint in failoverEndpoints) {
+            try {
+                val timestamp = System.currentTimeMillis().toString()
+                val counter = nextFailoverPresenceCounter().toString()
+                val requestId = UUID.randomUUID().toString()
+                val canonicalPath = "/failover/bridge/presence"
+                val canonical = listOf("GET", canonicalPath, timestamp, counter, requestId, "", failoverControlPlaneOrigin).joinToString("\n")
+                val signature = sign(canonical)
+                val connection = (URL("$endpoint/api/failover/bridge/presence").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("X-PIGA-Device-Id", deviceId)
+                    setRequestProperty("X-PIGA-Timestamp", timestamp)
+                    setRequestProperty("X-PIGA-Counter", counter)
+                    setRequestProperty("X-PIGA-Request-Id", requestId)
+                    setRequestProperty("X-PIGA-Signature", signature)
+                    setRequestProperty("X-PIGA-Bridge-Version", failoverContractVersion)
+                    setRequestProperty("X-PIGA-Bridge-Version-Code", failoverContractVersionCode)
+                    setRequestProperty("X-PIGA-Control-Plane-Origin", failoverControlPlaneOrigin)
+                }
+                val response = readJsonResponse(connection)
+                require(response.optString("admission") == "ALLOW_PRESENCE_ONLY") { "Failover presence not admitted." }
+                prefs.edit()
+                    .putString("failover_presence_status", "ONLINE")
+                    .putString("failover_presence_endpoint", endpoint)
+                    .putLong("failover_presence_ms", System.currentTimeMillis())
+                    .apply()
+                return
+            } catch (e: Exception) {
+                lastError = e.message ?: e.javaClass.simpleName
+            }
+        }
+        prefs.edit().putString("failover_presence_status", "DELAY $lastError").apply()
+    }
+
+    private fun nextFailoverPresenceCounter(): Long {
+        val next = prefs.getLong("failover_presence_counter", 0L) + 1L
+        require(prefs.edit().putLong("failover_presence_counter", next).commit()) {
+            "Unable to persist failover presence counter."
+        }
+        return next
     }
 
     private fun syncSafety(root: String, deviceId: String, pairingId: String) {
