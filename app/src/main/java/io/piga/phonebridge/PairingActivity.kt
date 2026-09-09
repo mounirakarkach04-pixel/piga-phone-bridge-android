@@ -32,6 +32,7 @@ class PairingActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private val recoveryEndpoint = "https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-pairing-recovery-v1"
     private val failoverPresenceEndpoint = "https://piga-failover-live-production.up.railway.app/api/failover/bridge/presence"
+    private val failoverIdentityRecoveryEndpoint = "https://piga-failover-live-production.up.railway.app/api/failover/bridge/recover-identity"
 
     private lateinit var status: TextView
     private lateinit var pairingCodeInput: EditText
@@ -197,9 +198,13 @@ class PairingActivity : Activity() {
                     }
                 } else {
                     try {
-                        postJson(recoveryEndpoint, body, 5_000, 5_000)
-                    } catch (primary: Exception) {
-                        recoverViaFailoverPresence(primary)
+                        recoverIdentityViaFailover()
+                    } catch (identity: Exception) {
+                        try {
+                            postJson(recoveryEndpoint, body, 5_000, 5_000)
+                        } catch (_: Exception) {
+                            throw identity
+                        }
                     }
                 }
                 when (response.optString("status")) {
@@ -240,6 +245,20 @@ class PairingActivity : Activity() {
                             if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
                         }
                     }
+                    "RECOVER_PRESENCE_ONLY" -> {
+                        val recoveredDeviceId = response.getString("deviceId").trim()
+                        require(recoveredDeviceId.isNotBlank()) { "RECOVERY_DEVICE_ID_MISSING" }
+                        val root = ControlPlaneResolver.resolve(ControlPlaneResolver.CANONICAL_CONTROL_PLANE)
+                        require(prefs.edit().putString("device_id", recoveredDeviceId).remove("pairing_id").putBoolean("paired", true).putString("base_url", root).putBoolean("emergency_stop", false).putBoolean("master_autonomy", false).putString("autonomy_status", "PRESENCE_ONLY").putString("runtime_status", "PRESENCE_ONLY").putString("recovery_transport", "RAILWAY_IDENTITY_RECOVERY").commit()) { "RECOVERY_PERSIST_FAILED" }
+                        runOnUiThread {
+                            pairingId = null; challenge = null; pairingCodeInput.setText("")
+                            pairingCodeInput.isEnabled = false; confirmButton.isEnabled = false; recoveryButton.isEnabled = true
+                            challengeButton.text = "Vollständige Bindung wiederherstellen"; challengeButton.isEnabled = true
+                            status.text = "Geräteidentität sicher aus dem Android Keystore wiederhergestellt. Presence ist aktiv; Befehle bleiben bis zur vollständigen Bindung gesperrt."
+                            val service = Intent(this@PairingActivity, BridgeService::class.java)
+                            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
+                        }
+                    }
                     "PENDING_ADMIN_RECOVERY" -> {
                         val pendingDevice = response.optString("deviceId")
                         val pendingPairing = response.optString("pairingId")
@@ -264,6 +283,35 @@ class PairingActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun recoverIdentityViaFailover(): JSONObject {
+        val timestamp = System.currentTimeMillis().toString()
+        val counter = (prefs.getLong("failover_presence_counter", 0L) + 1L).toString()
+        val requestId = UUID.randomUUID().toString()
+        val origin = ControlPlaneResolver.CANONICAL_CONTROL_PLANE
+        val canonicalPath = "/failover/bridge/recover-identity"
+        val canonical = listOf("GET", canonicalPath, timestamp, counter, requestId, "", origin).joinToString("\n")
+        require(prefs.edit().putLong("failover_presence_counter", counter.toLong()).commit()) { "RECOVERY_COUNTER_PERSIST_FAILED" }
+        val connection = (URL(failoverIdentityRecoveryEndpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"; connectTimeout = 8_000; readTimeout = 8_000
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("X-PIGA-Timestamp", timestamp)
+            setRequestProperty("X-PIGA-Counter", counter)
+            setRequestProperty("X-PIGA-Request-Id", requestId)
+            setRequestProperty("X-PIGA-Signature", sign(canonical))
+            setRequestProperty("X-PIGA-Bridge-Version", "0.2.0")
+            setRequestProperty("X-PIGA-Bridge-Version-Code", "19")
+            setRequestProperty("X-PIGA-Control-Plane-Origin", origin)
+        }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val responseText = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        if (code !in 200..299) throw IllegalStateException("HTTP $code ${responseText.take(240)}")
+        val proof = JSONObject(responseText)
+        require(proof.optString("admission") == "ALLOW_IDENTITY_RECOVERY_ONLY") { "RECOVERY_FAILOVER_NOT_ADMITTED" }
+        require(proof.optString("pairing") == "paired") { "RECOVERY_FAILOVER_BINDING_MISMATCH" }
+        return JSONObject().put("status", "RECOVER_PRESENCE_ONLY").put("deviceId", proof.getString("deviceId")).put("recoveryAuthority", "signed-device-identity-only")
     }
 
     private fun recoverViaFailoverPresence(primaryError: Exception): JSONObject {

@@ -74,10 +74,15 @@ class BridgeService : Service() {
                     ?: throw IllegalStateException("Missing bridge base URL")
                 val deviceId = prefs.getString("device_id", null)
                     ?: throw IllegalStateException("Missing device id")
-                val pairingId = prefs.getString("pairing_id", null)
-                    ?: throw IllegalStateException("Missing pairing id")
+                val pairingId = prefs.getString("pairing_id", null)?.trim().orEmpty()
 
                 tryFailoverPresence(deviceId)
+                if (pairingId.isBlank()) {
+                    prefs.edit().putLong("last_poll_ms", System.currentTimeMillis()).putString("runtime_status", "PRESENCE_ONLY").apply()
+                    updateNotification("PIGA Bridge presence-only • commands blocked")
+                    Thread.sleep(15000)
+                    continue
+                }
                 syncSafety(root, deviceId, pairingId)
                 retryPendingResults(root, deviceId, pairingId)
 
