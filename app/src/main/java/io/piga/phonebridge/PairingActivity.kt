@@ -31,6 +31,7 @@ class PairingActivity : Activity() {
     private val alias = "piga_phone_bridge_device_key"
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private val recoveryEndpoint = "https://qjvopzschqukitvudgfz.supabase.co/functions/v1/piga-pairing-recovery-v1"
+    private val failoverPresenceEndpoint = "https://piga-failover-live-production.up.railway.app/api/failover/bridge/presence"
 
     private lateinit var status: TextView
     private lateinit var pairingCodeInput: EditText
@@ -187,7 +188,11 @@ class PairingActivity : Activity() {
                     .put("nonce", nonce)
                     .put("signature", sign(canonical))
                     .put("keyAlgorithm", "EC-P256-SHA256")
-                val response = postJson(recoveryEndpoint, body, 5_000, 5_000)
+                val response = try {
+                    postJson(recoveryEndpoint, body, 5_000, 5_000)
+                } catch (primary: Exception) {
+                    recoverViaFailoverPresence(primary)
+                }
                 when (response.optString("status")) {
                     "RECOVER" -> {
                         val recoveredDeviceId = response.getString("deviceId").trim()
@@ -250,6 +255,52 @@ class PairingActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun recoverViaFailoverPresence(primaryError: Exception): JSONObject {
+        val localPairingId = prefs.getString("pairing_id", null)?.trim().orEmpty()
+        val localDeviceId = prefs.getString("device_id", null)?.trim().orEmpty()
+        require(localPairingId.isNotBlank() && localDeviceId.isNotBlank()) { "RECOVERY_LOCAL_BINDING_MISSING" }
+        val timestamp = System.currentTimeMillis().toString()
+        val counter = (prefs.getLong("failover_presence_counter", 0L) + 1L).toString()
+        val requestId = UUID.randomUUID().toString()
+        val origin = ControlPlaneResolver.CANONICAL_CONTROL_PLANE
+        val canonicalPath = "/failover/bridge/presence"
+        val canonical = listOf("GET", canonicalPath, timestamp, counter, requestId, "", origin).joinToString("\n")
+        require(prefs.edit().putLong("failover_presence_counter", counter.toLong()).commit()) { "RECOVERY_COUNTER_PERSIST_FAILED" }
+        val connection = (URL(failoverPresenceEndpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 8_000
+            readTimeout = 8_000
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("X-PIGA-Device-Id", localDeviceId)
+            setRequestProperty("X-PIGA-Timestamp", timestamp)
+            setRequestProperty("X-PIGA-Counter", counter)
+            setRequestProperty("X-PIGA-Request-Id", requestId)
+            setRequestProperty("X-PIGA-Signature", sign(canonical))
+            setRequestProperty("X-PIGA-Bridge-Version", "0.2.0")
+            setRequestProperty("X-PIGA-Bridge-Version-Code", "19")
+            setRequestProperty("X-PIGA-Control-Plane-Origin", origin)
+        }
+        val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+        val proof = JSONObject(responseText)
+        require(proof.optString("admission") == "ALLOW_PRESENCE_ONLY") { "RECOVERY_FAILOVER_NOT_ADMITTED" }
+        require(proof.optString("deviceId") == localDeviceId && proof.optString("pairing") == "paired") { "RECOVERY_FAILOVER_BINDING_MISMATCH" }
+        prefs.edit()
+            .putString("recovery_transport", "RAILWAY_SIGNED_PRESENCE")
+            .putString("runtime_status", "PRESENCE_ONLY")
+            .putBoolean("paired", true)
+            .putLong("failover_presence_ms", System.currentTimeMillis())
+            .apply()
+        return JSONObject()
+            .put("status", "RECOVER")
+            .put("deviceId", localDeviceId)
+            .put("pairingId", localPairingId)
+            .put("registryState", "active")
+            .put("emergencyStop", false)
+            .put("autonomyEnabled", prefs.getBoolean("master_autonomy", false))
+            .put("recoveryAuthority", "signed-presence-only")
+            .put("primaryError", diagnosticCode(primaryError))
     }
 
     private fun enableRecoveryActions() {
