@@ -4,4 +4,5 @@
     <string name="diagnostics_title">PIGA Bridge Diagnostics</string>
     <string name="runtime_channel_name">PIGA Governed Runtime</string>
     <string name="commands_channel_name">PIGA Local Commands</string>
+    <string name="accessibility_description">PIGA steuert nur explizit freigegebene Owner-Geräteaktionen unter laufender Governance. Passwort-, PIN-, OTP- und Sicherheitsfelder bleiben gesperrt.</string>
 </resources>
