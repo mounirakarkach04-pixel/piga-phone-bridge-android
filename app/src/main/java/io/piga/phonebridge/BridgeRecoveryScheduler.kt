@@ -3,6 +3,7 @@ package io.piga.phonebridge
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
@@ -11,6 +12,7 @@ import java.util.concurrent.TimeUnit
 
 object BridgeRecoveryScheduler {
     private const val PERIODIC_NAME = "piga-bridge-recovery-periodic"
+    private const val IMMEDIATE_NAME = "piga-bridge-recovery-immediate"
 
     fun ensureScheduled(context: Context) {
         val constraints = Constraints.Builder()
@@ -33,6 +35,10 @@ object BridgeRecoveryScheduler {
         val once = OneTimeWorkRequestBuilder<BridgeRecoveryWorker>()
             .setConstraints(constraints)
             .build()
-        WorkManager.getInstance(context).enqueue(once)
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            IMMEDIATE_NAME,
+            ExistingWorkPolicy.KEEP,
+            once
+        )
     }
 }
