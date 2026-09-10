@@ -397,7 +397,19 @@ class PairingActivity : Activity() {
         when (uri.host) {
             "owner-claim" -> handleOwnerClaim(uri)
             "pair-confirm" -> handlePairConfirm(uri)
-            "device-pairing" -> restorePendingPairing()
+            "device-pairing" -> {
+                val hasLocalBinding = !prefs.getString("pairing_id", null)?.trim().isNullOrBlank() &&
+                    !prefs.getString("device_id", null)?.trim().isNullOrBlank()
+                if (hasLocalBinding) {
+                    startActivity(
+                        Intent(this, MainActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    )
+                    finish()
+                } else {
+                    restorePendingPairing()
+                }
+            }
         }
     }
 
