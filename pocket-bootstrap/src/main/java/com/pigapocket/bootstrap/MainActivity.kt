@@ -9,7 +9,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.view.View
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -37,7 +36,7 @@ class MainActivity : Activity() {
         private val TRUSTED_AUTH_HOSTS = setOf(APP_HOST, CLERK_HOST)
     }
 
-    private lateinit var webView: WebView
+    private lateinit var webView: PigaWebView
     private var pendingWebPermission: PermissionRequest? = null
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -50,14 +49,13 @@ class MainActivity : Activity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createWebView() {
-        webView = WebView(this).apply {
+        webView = PigaWebView(this).apply {
             isFocusable = true
             isFocusableInTouchMode = true
             isClickable = true
             isLongClickable = true
         }
         setContentView(webView)
-        webView.requestFocus(View.FOCUS_DOWN)
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
@@ -84,13 +82,6 @@ class MainActivity : Activity() {
                     runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri)) }
                     true
                 }
-            }
-
-            override fun onPageFinished(view: WebView, url: String) {
-                super.onPageFinished(view, url)
-                view.isFocusable = true
-                view.isFocusableInTouchMode = true
-                view.requestFocus(View.FOCUS_DOWN)
             }
 
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
@@ -232,12 +223,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (::webView.isInitialized) {
-            webView.onResume()
-            webView.isFocusable = true
-            webView.isFocusableInTouchMode = true
-            webView.requestFocus(View.FOCUS_DOWN)
-        }
+        if (::webView.isInitialized) webView.onResume()
     }
 
     override fun onPause() {
