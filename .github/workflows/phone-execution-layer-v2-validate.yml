@@ -1,0 +1,191 @@
+name: Phone Execution Layer v2 Validate
+
+on:
+  push:
+    branches: [feature/phone-execution-layer-v2]
+    paths:
+      - '.github/workflows/phone-execution-layer-v2-validate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  wire-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: feature/phone-execution-layer-v2
+
+      - name: Wire governed command surface
+        shell: python
+        run: |
+          from pathlib import Path
+
+          service = Path('app/src/main/java/io/piga/phonebridge/BridgeService.kt')
+          text = service.read_text()
+          allow_anchor = '''            "supported_app_launch" to "pocket.app.launch",
+            "share_text" to "pocket.share.text",
+            "orchestration_plan_verify" to "pocket.orchestration.verify"
+'''
+          allow_new = '''            "supported_app_launch" to "pocket.app.launch",
+            "share_text" to "pocket.share.text",
+            "phone_call" to "pocket.phone.call",
+            "phone_answer" to "pocket.phone.answer",
+            "phone_hangup" to "pocket.phone.hangup",
+            "ui_navigation" to "pocket.ui.navigate",
+            "form_fill" to "pocket.form.fill",
+            "message_compose" to "pocket.message.compose",
+            "message_send_confirmed" to "pocket.message.send",
+            "form_submit_confirmed" to "pocket.form.submit",
+            "orchestration_plan_verify" to "pocket.orchestration.verify"
+'''
+          if '"phone_answer" to "pocket.phone.answer"' not in text:
+              if allow_anchor not in text:
+                  raise SystemExit('A7SEM_BLOCK: BridgeService allowlist anchor drift')
+              text = text.replace(allow_anchor, allow_new, 1)
+
+          dispatch_anchor = '''                "supported_app_launch" -> executeAppLaunch(payload)
+                "share_text" -> executeShareText(payload)
+                "orchestration_plan_verify" -> executeOrchestrationPlanVerify(payload)
+'''
+          dispatch_new = '''                "supported_app_launch" -> executeAppLaunch(payload)
+                "share_text" -> executeShareText(payload)
+                "phone_call" -> PhoneExecutionRouter.placeCall(this, payload)
+                "phone_answer" -> PhoneExecutionRouter.answerCall(this)
+                "phone_hangup" -> PhoneExecutionRouter.hangup(this)
+                "ui_navigation" -> PhoneExecutionRouter.uiNavigation(payload)
+                "form_fill" -> PhoneExecutionRouter.fillForm(payload)
+                "message_compose" -> PhoneExecutionRouter.composeMessage(this, payload)
+                "message_send_confirmed" -> PhoneExecutionRouter.sendMessage(payload)
+                "form_submit_confirmed" -> PhoneExecutionRouter.submitForm(payload)
+                "orchestration_plan_verify" -> executeOrchestrationPlanVerify(payload)
+'''
+          if '"phone_answer" -> PhoneExecutionRouter.answerCall(this)' not in text:
+              if dispatch_anchor not in text:
+                  raise SystemExit('A7SEM_BLOCK: BridgeService dispatch anchor drift')
+              text = text.replace(dispatch_anchor, dispatch_new, 1)
+          service.write_text(text)
+
+          main = Path('app/src/main/java/io/piga/phonebridge/MainActivity.kt')
+          ui = main.read_text()
+          if 'import android.provider.Settings' not in ui:
+              ui = ui.replace('import android.os.Bundle\n', 'import android.os.Bundle\nimport android.provider.Settings\n')
+
+          button_anchor = '''        content.addView(actionButton("Benachrichtigungen erlauben", secondaryColor) {
+            requestNotificationPermission()
+        }, fullWidth())
+'''
+          buttons = '''        content.addView(actionButton("Telefonie erlauben", secondaryColor) {
+            requestTelephonyPermissions()
+        }, fullWidth())
+        content.addView(actionButton("PIGA Bedienung aktivieren", secondaryColor) {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }, fullWidth())
+'''
+          if 'PIGA Bedienung aktivieren' not in ui:
+              if button_anchor not in ui:
+                  raise SystemExit('A7SEM_BLOCK: MainActivity button anchor drift')
+              ui = ui.replace(button_anchor, button_anchor + buttons, 1)
+
+          result_anchor = '        if (requestCode == NOTIFICATION_PERMISSION_REQUEST) refreshStatus()\n'
+          result_new = '''        if (requestCode == NOTIFICATION_PERMISSION_REQUEST) refreshStatus()
+        if (requestCode == TELEPHONY_PERMISSION_REQUEST) {
+            val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            prefs.edit().putBoolean("telephony_permissions", granted).apply()
+            toast(if (granted) "Telefonie freigegeben." else "Telefonie bleibt blockiert.")
+            refreshStatus()
+        }
+'''
+          if 'requestCode == TELEPHONY_PERMISSION_REQUEST' not in ui:
+              if result_anchor not in ui:
+                  raise SystemExit('A7SEM_BLOCK: permission callback anchor drift')
+              ui = ui.replace(result_anchor, result_new, 1)
+
+          method_anchor = '    private fun requestNotificationPermission() {\n'
+          method = '''    private fun requestTelephonyPermissions() {
+        if (Build.VERSION.SDK_INT < 23) return
+        val required = arrayOf(
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.ANSWER_PHONE_CALLS,
+            Manifest.permission.READ_PHONE_STATE,
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (required.isEmpty()) {
+            prefs.edit().putBoolean("telephony_permissions", true).apply()
+            toast("Telefonie ist bereits freigegeben.")
+            refreshStatus()
+        } else {
+            requestPermissions(required.toTypedArray(), TELEPHONY_PERMISSION_REQUEST)
+        }
+    }
+
+'''
+          if 'private fun requestTelephonyPermissions()' not in ui:
+              if method_anchor not in ui:
+                  raise SystemExit('A7SEM_BLOCK: permission method anchor drift')
+              ui = ui.replace(method_anchor, method + method_anchor, 1)
+
+          status_anchor = '            append("\\nBenachrichtigungen: ").append(if (notificationPermission) "GRANTED" else "NOT GRANTED")\n'
+          status_new = '''            append("\\nBenachrichtigungen: ").append(if (notificationPermission) "GRANTED" else "NOT GRANTED")
+            val telephonyReady = checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+            append("\\nTelefonie: ").append(if (telephonyReady) "GRANTED" else "NOT GRANTED")
+            append("\\nPIGA Bedienung: ").append(if (PigaAccessibilityService.isConnected()) "ACTIVE" else "NOT ENABLED")
+'''
+          if 'append("\\nPIGA Bedienung: ")' not in ui:
+              if status_anchor not in ui:
+                  raise SystemExit('A7SEM_BLOCK: status anchor drift')
+              ui = ui.replace(status_anchor, status_new, 1)
+
+          if 'private const val TELEPHONY_PERMISSION_REQUEST' not in ui:
+              ui = ui.replace(
+                  '        private const val NOTIFICATION_PERMISSION_REQUEST = 1001\n',
+                  '        private const val NOTIFICATION_PERMISSION_REQUEST = 1001\n        private const val TELEPHONY_PERMISSION_REQUEST = 1002\n',
+                  1,
+              )
+          main.write_text(ui)
+
+          gradle = Path('app/build.gradle.kts')
+          g = gradle.read_text()
+          g = g.replace('versionCode = 23', 'versionCode = 24', 1)
+          g = g.replace('versionName = "1.0.6"', 'versionName = "1.1.0-owner-execution"', 1)
+          gradle.write_text(g)
+
+      - name: A7SEM static invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F '"phone_call" to "pocket.phone.call"' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F '"message_send_confirmed" to "pocket.message.send"' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'Password, PIN, OTP and card-security fields stay human-reserved.' app/src/main/java/io/piga/phonebridge/PigaAccessibilityService.kt
+          grep -F 'Emergency numbers are never admitted for autonomous calling.' app/src/main/java/io/piga/phonebridge/PhoneExecutionRouter.kt
+          grep -F 'android.permission.BIND_ACCESSIBILITY_SERVICE' app/src/main/AndroidManifest.xml
+          grep -F 'versionCode = 24' app/build.gradle.kts
+          git diff --check
+
+      - name: JVM tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Android lint
+        run: ./gradlew lintDebug --stacktrace
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Commit validated source wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No source wiring changes required.'
+            exit 0
+          fi
+          git config user.name 'piga-a7sem-reverse'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/io/piga/phonebridge/BridgeService.kt app/src/main/java/io/piga/phonebridge/MainActivity.kt app/build.gradle.kts
+          git commit -m 'feat(android): wire validated owner phone execution layer v2'
+          git push origin HEAD:feature/phone-execution-layer-v2
