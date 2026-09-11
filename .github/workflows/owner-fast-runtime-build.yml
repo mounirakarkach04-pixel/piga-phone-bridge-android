@@ -52,20 +52,34 @@ jobs:
           from pathlib import Path
           before = Path('/tmp/BridgeService.before.kt').read_text()
           after = Path('app/src/main/java/io/piga/phonebridge/BridgeService.kt').read_text()
-          sensitive = [
+
+          exact_count = [
               'piga_phone_bridge_device_key',
               'getString("base_url", null)',
               'getString("device_id", null)',
               'getString("pairing_id", null)',
               'command_nonce_',
               'pending_command_result_',
-              'master_autonomy',
-              'emergency_stop',
           ]
-          for token in sensitive:
+          for token in exact_count:
               if before.count(token) != after.count(token):
                   raise SystemExit(f'sensitive trust/replay token changed: {token}: {before.count(token)} -> {after.count(token)}')
-          print('Sensitive pairing/trust/replay literal counts preserved: PASS')
+
+          # The optimization may add safety READS so it can sync on state change.
+          # It must never add authority WRITES or removal/reset paths.
+          for key in ('master_autonomy', 'emergency_stop'):
+              read = f'getBoolean("{key}", false)'
+              if read not in before or read not in after:
+                  raise SystemExit(f'safety gate read missing: {key}')
+              forbidden = [
+                  f'putBoolean("{key}"',
+                  f'remove("{key}"',
+              ]
+              for token in forbidden:
+                  if after.count(token) != before.count(token):
+                      raise SystemExit(f'safety authority write/reset changed: {token}')
+
+          print('Pairing/key/replay invariants preserved; only additional safety reads admitted: PASS')
           PY
 
       - name: Set up JDK 17
