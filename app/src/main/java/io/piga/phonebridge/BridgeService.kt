@@ -32,6 +32,16 @@ class BridgeService : Service() {
     private val failoverControlPlaneOrigin = "https://app.pigapocket.com"
     private val failoverContractVersion = "0.2.0"
     private val failoverContractVersionCode = "19"
+    // Owner fast-runtime policy: faster command pickup without multiplying idle work.
+    private val commandPollIdleMs = 3_000L
+    private val commandPollBusyMs = 750L
+    private val unpairedPollMs = 15_000L
+    private val safetySyncIntervalMs = 60_000L
+    private val failoverPresenceIntervalMs = 300_000L
+    private val initialErrorBackoffMs = 2_000L
+    private val maxErrorBackoffMs = 30_000L
+    private val runtimeStatusPersistIntervalMs = 15_000L
+    private val runtimeNotificationIntervalMs = 30_000L
     private val prefs by lazy { getSharedPreferences("piga_bridge", MODE_PRIVATE) }
     private val ttsLock = Object()
     @Volatile private var ttsEngine: TextToSpeech? = null
@@ -64,53 +74,102 @@ class BridgeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun pollLoop() {
+        var errorBackoffMs = initialErrorBackoffMs
         while (running.get()) {
+            var nextSleepMs = commandPollIdleMs
             try {
                 if (!prefs.getBoolean("paired", false)) {
-                    Thread.sleep(5000)
-                    continue
-                }
-                val root = prefs.getString("base_url", null)?.trim()?.removeSuffix("/")
-                    ?: throw IllegalStateException("Missing bridge base URL")
-                val deviceId = prefs.getString("device_id", null)
-                    ?: throw IllegalStateException("Missing device id")
-                val pairingId = prefs.getString("pairing_id", null)?.trim().orEmpty()
+                    nextSleepMs = unpairedPollMs
+                    recordRuntimeStatus("UNPAIRED", force = false)
+                    updateRuntimeNotification("PIGA Bridge waiting for pairing")
+                } else {
+                    val root = prefs.getString("base_url", null)?.trim()?.removeSuffix("/")
+                        ?: throw IllegalStateException("Missing bridge base URL")
+                    val deviceId = prefs.getString("device_id", null)
+                        ?: throw IllegalStateException("Missing device id")
+                    val pairingId = prefs.getString("pairing_id", null)?.trim().orEmpty()
+                    val nowMs = System.currentTimeMillis()
 
-                tryFailoverPresence(deviceId)
-                if (pairingId.isBlank()) {
-                    prefs.edit().putLong("last_poll_ms", System.currentTimeMillis()).putString("runtime_status", "PRESENCE_ONLY").apply()
-                    updateNotification("PIGA Bridge presence-only • commands blocked")
-                    Thread.sleep(15000)
-                    continue
-                }
-                syncSafety(root, deviceId, pairingId)
-                retryPendingResults(root, deviceId, pairingId)
+                    if (nowMs - prefs.getLong("last_failover_presence_attempt_ms", 0L) >= failoverPresenceIntervalMs) {
+                        prefs.edit().putLong("last_failover_presence_attempt_ms", nowMs).apply()
+                        tryFailoverPresence(deviceId)
+                    }
 
-                val canonicalPath = "/api/bridge/devices/$deviceId/commands"
-                val response = signedRuntimeGet("$root$canonicalPath", canonicalPath, pairingId)
-                val commands = response.optJSONArray("commands")
-                val count = commands?.length() ?: 0
-                if (commands != null) {
-                    for (i in 0 until commands.length()) {
-                        processCommand(root, deviceId, pairingId, commands.getJSONObject(i))
+                    if (pairingId.isBlank()) {
+                        recordRuntimeStatus("PRESENCE_ONLY", force = false)
+                        updateRuntimeNotification("PIGA Bridge presence-only • commands blocked")
+                        nextSleepMs = unpairedPollMs
+                    } else {
+                        if (shouldSyncSafety()) syncSafety(root, deviceId, pairingId)
+                        retryPendingResults(root, deviceId, pairingId)
+
+                        val canonicalPath = "/api/bridge/devices/$deviceId/commands"
+                        val response = signedRuntimeGet("$root$canonicalPath", canonicalPath, pairingId)
+                        val commands = response.optJSONArray("commands")
+                        val count = commands?.length() ?: 0
+                        if (commands != null) {
+                            for (i in 0 until commands.length()) {
+                                processCommand(root, deviceId, pairingId, commands.getJSONObject(i))
+                            }
+                        }
+
+                        recordRuntimeStatus("ONLINE commands=$count", force = count > 0)
+                        updateRuntimeNotification("PIGA Bridge online • pending $count")
+                        nextSleepMs = if (count > 0) commandPollBusyMs else commandPollIdleMs
+                        errorBackoffMs = initialErrorBackoffMs
                     }
                 }
-
-                prefs.edit()
-                    .putLong("last_poll_ms", System.currentTimeMillis())
-                    .putString("runtime_status", "ONLINE commands=$count")
-                    .apply()
-                updateNotification("PIGA Bridge online • pending $count")
             } catch (e: Exception) {
-                prefs.edit().putString("runtime_status", "ERROR ${e.message ?: e.javaClass.simpleName}").apply()
-                updateNotification("PIGA Bridge reconnecting")
+                recordRuntimeStatus("ERROR ${e.message ?: e.javaClass.simpleName}", force = true)
+                updateRuntimeNotification("PIGA Bridge reconnecting", force = true)
+                nextSleepMs = errorBackoffMs
+                errorBackoffMs = (errorBackoffMs * 2L).coerceAtMost(maxErrorBackoffMs)
             }
+
             try {
-                Thread.sleep(15000)
+                Thread.sleep(nextSleepMs)
             } catch (_: InterruptedException) {
                 running.set(false)
+                Thread.currentThread().interrupt()
             }
         }
+    }
+
+    private fun recordRuntimeStatus(status: String, force: Boolean) {
+        val now = System.currentTimeMillis()
+        val lastWrite = prefs.getLong("last_runtime_status_persist_ms", 0L)
+        val previous = prefs.getString("runtime_status", null)
+        if (!force && previous == status && now - lastWrite < runtimeStatusPersistIntervalMs) return
+        prefs.edit()
+            .putLong("last_poll_ms", now)
+            .putLong("last_runtime_status_persist_ms", now)
+            .putString("runtime_status", status)
+            .apply()
+    }
+
+    private fun updateRuntimeNotification(text: String, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        val previous = prefs.getString("last_runtime_notification_text", null)
+        val lastUpdate = prefs.getLong("last_runtime_notification_ms", 0L)
+        if (!force && previous == text && now - lastUpdate < runtimeNotificationIntervalMs) return
+        updateNotification(text)
+        prefs.edit()
+            .putString("last_runtime_notification_text", text)
+            .putLong("last_runtime_notification_ms", now)
+            .apply()
+    }
+
+    private fun safetyFingerprint(masterAutonomy: Boolean, emergencyStop: Boolean, notificationPermission: Boolean): String =
+        "$masterAutonomy:$emergencyStop:$notificationPermission"
+
+    private fun shouldSyncSafety(): Boolean {
+        val masterAutonomy = prefs.getBoolean("master_autonomy", false)
+        val emergencyStop = prefs.getBoolean("emergency_stop", false)
+        val notificationPermission = hasNotificationPermission()
+        val fingerprint = safetyFingerprint(masterAutonomy, emergencyStop, notificationPermission)
+        val previous = prefs.getString("last_safety_fingerprint", null)
+        val lastSync = prefs.getLong("last_safety_sync_ms", 0L)
+        return previous != fingerprint || System.currentTimeMillis() - lastSync >= safetySyncIntervalMs
     }
 
     private fun tryFailoverPresence(deviceId: String) {
@@ -169,6 +228,7 @@ class BridgeService : Service() {
         signedRuntimePost("$root$path", path, pairingId, body)
         prefs.edit()
             .putBoolean("notification_permission", notificationPermission)
+            .putString("last_safety_fingerprint", safetyFingerprint(masterAutonomy, emergencyStop, notificationPermission))
             .putLong("last_safety_sync_ms", System.currentTimeMillis())
             .apply()
     }
@@ -536,8 +596,8 @@ class BridgeService : Service() {
 
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 15000
-            readTimeout = 15000
+            connectTimeout = 8000
+            readTimeout = 9000
             setRequestProperty("Accept", "application/json")
             setRequestProperty("X-PIGA-Bridge-Pairing-Id", pairingId)
             setRequestProperty("X-PIGA-Bridge-Timestamp", timestamp)
@@ -558,8 +618,8 @@ class BridgeService : Service() {
 
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 15000
-            readTimeout = 15000
+            connectTimeout = 8000
+            readTimeout = 9000
             doOutput = true
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
