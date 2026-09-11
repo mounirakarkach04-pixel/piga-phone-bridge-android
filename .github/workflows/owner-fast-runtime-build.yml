@@ -1,0 +1,116 @@
+name: Owner Fast PhoneBridge Runtime
+
+on:
+  push:
+    branches:
+      - owner/phonebridge-fast-runtime-20260910-final
+    paths:
+      - scripts/apply_owner_fast_runtime_policy.py
+      - .github/workflows/owner-fast-runtime-build.yml
+      - app/src/main/java/io/piga/phonebridge/BridgeService.kt
+      - app/build.gradle.kts
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: owner-fast-phonebridge-runtime
+  cancel-in-progress: true
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout owner fast branch
+        uses: actions/checkout@v6
+        with:
+          ref: owner/phonebridge-fast-runtime-20260910-final
+          fetch-depth: 0
+
+      - name: Apply surgical runtime policy
+        run: python scripts/apply_owner_fast_runtime_policy.py
+
+      - name: Verify no capability expansion or trust reset
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F '"local_notification" to "pocket.notification"' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F '"clipboard_write" to "pocket.clipboard.write"' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F '"orchestration_plan_verify" to "pocket.orchestration.verify"' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'commandPollIdleMs = 3_000L' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'safetySyncIntervalMs = 60_000L' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'failoverPresenceIntervalMs = 300_000L' app/src/main/java/io/piga/phonebridge/BridgeService.kt
+          grep -F 'versionCode = 24' app/build.gradle.kts
+          grep -F 'versionName = "1.0.7"' app/build.gradle.kts
+          ! git diff -- app/src/main/java/io/piga/phonebridge/BridgeService.kt | grep -E '^[-+].*(alias =|device_id|pairing_id|base_url|command_nonce_|pending_command_result_)' || {
+            echo 'Trust/pairing/replay invariant touched unexpectedly.' >&2
+            exit 1
+          }
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-read-only: false
+
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --build-cache --parallel --stacktrace
+
+      - name: Android lint
+        run: gradle :app:lintDebug --build-cache --parallel --stacktrace
+
+      - name: Build debug APK
+        run: gradle :app:assembleDebug --build-cache --parallel --stacktrace
+
+      - name: Record evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p owner-fast-evidence
+          sha256sum app/build/outputs/apk/debug/app-debug.apk > owner-fast-evidence/app-debug.apk.sha256
+          git diff -- app/src/main/java/io/piga/phonebridge/BridgeService.kt app/build.gradle.kts > owner-fast-evidence/runtime.patch
+          cat > owner-fast-evidence/status.txt <<'EOF'
+          PIGA_OWNER_FAST_PHONEBRIDGE_BUILD=PASS
+          PRIMARY_RUNTIME=PHONEBRIDGE_CLOUD
+          ADB_ROLE=MAINTENANCE_ONLY
+          COMMAND_IDLE_POLL_MS=3000
+          COMMAND_BUSY_DRAIN_MS=750
+          SAFETY_SYNC=CHANGE_DRIVEN_OR_60S
+          FAILOVER_PRESENCE_INTERVAL_MS=300000
+          FAILURE_BACKOFF_MS=2000_TO_30000
+          CAPABILITY_EXPANSION=NONE
+          PAIRING_RESET=NONE
+          FULL_OWNER_PRODUCT_READY=NOT_CLAIMED
+          EOF
+
+      - name: Materialize tested source on owner branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- app/src/main/java/io/piga/phonebridge/BridgeService.kt app/build.gradle.kts; then
+            echo 'Fast runtime source already materialized.'
+          else
+            git config user.name 'piga-owner-fast-runtime'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add app/src/main/java/io/piga/phonebridge/BridgeService.kt app/build.gradle.kts
+            git commit -m 'perf(android): materialize low-load fast PhoneBridge runtime'
+            git push origin HEAD:owner/phonebridge-fast-runtime-20260910-final
+          fi
+
+      - name: Upload evidence and APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: piga-owner-fast-phonebridge-runtime
+          path: |
+            owner-fast-evidence/
+            app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
